@@ -6,6 +6,7 @@ import { ApiKeyInput } from "./ApiKeyInput";
 import { SalesAnalysis } from "./SalesAnalysis";
 import { EmployeeSearch } from "./EmployeeSearch";
 import { CustomQuery } from "./CustomQuery";
+import Diagnostics from "./Diagnostics";
 
 export const OdooBiAssistant = () => {
   const [relayHost, setRelayHost] = useState("http://localhost:8000");
@@ -26,6 +27,9 @@ export const OdooBiAssistant = () => {
         apiKey={apiKey}
         setApiKey={setApiKey}
       />
+
+      {/* Diagnostics panel for testing connectivity to the relay */}
+      <Diagnostics relayHost={relayHost} apiKey={apiKey} />
 
       <Tabs defaultValue="sales">
         <TabsList className="grid w-full grid-cols-3">
