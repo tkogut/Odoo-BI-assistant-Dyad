@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { exportToCsv } from "@/lib/exportCsv";
+import { executeMethod } from "@/lib/relayClient";
 
 interface CustomQueryProps {
   relayHost: string;
@@ -88,29 +89,13 @@ export const CustomQuery = ({ relayHost, apiKey }: CustomQueryProps) => {
     const toastId = showLoading("Executing method...");
 
     try {
-      const resp = await fetch(`${relayHost}/api/execute_method`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": apiKey,
-        },
-        body: JSON.stringify({
-          model,
-          method,
-          args: parsedArgs,
-          kwargs: parsedKwargs,
-        }),
+      const result = await executeMethod(relayHost, apiKey, {
+        model,
+        method,
+        args: parsedArgs,
+        kwargs: parsedKwargs,
       });
-
-      const result = await resp.json();
       dismissToast(toastId);
-
-      if (!resp.ok || (result && result.success === false)) {
-        const msg = result?.error || result?.message || `Execution failed (status ${resp.status})`;
-        showError(msg);
-        setRawResult(result);
-        return;
-      }
 
       const records = extractRecords(result);
       if (records) {
@@ -125,7 +110,7 @@ export const CustomQuery = ({ relayHost, apiKey }: CustomQueryProps) => {
     } catch (err) {
       dismissToast(toastId);
       console.error(err);
-      showError("Network or parsing error while executing method.");
+      showError(err instanceof Error ? err.message : "Network or parsing error while executing method.");
       setRawResult(err);
     } finally {
       setLoading(false);
