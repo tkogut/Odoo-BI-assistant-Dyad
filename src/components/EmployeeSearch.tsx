@@ -68,15 +68,12 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
 
       const json = await resp.json();
 
-      if (resp.ok) {
-        setResults(json);
-        showSuccess(`Found ${json.length} employee(s).`);
+      if (resp.ok && json.success) {
+        setResults(json.result);
+        showSuccess(`Found ${json.result.length} employee(s).`);
       } else {
-        showError(
-          `Search failed: ${
-            (json && (json.error || json.message)) || `HTTP ${resp.status} ${resp.statusText}`
-          }`,
-        );
+        const errorMessage = json.error || json.message || `HTTP ${resp.status} ${resp.statusText}`;
+        showError(`Search failed: ${errorMessage}`);
       }
     } catch (err: any) {
       const errorMessage = err?.message || String(err);

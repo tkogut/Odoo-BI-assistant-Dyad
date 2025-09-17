@@ -46,14 +46,11 @@ export const SalesAnalysis: React.FC<Props> = ({ relayHost, apiKey }) => {
       const json = await resp.json().catch(() => null);
       setResult({ status: resp.status, ok: resp.ok, body: json });
 
-      if (resp.ok) {
+      if (resp.ok && json && json.success) {
         showSuccess("Sales analysis completed");
       } else {
-        showError(
-          `Analysis failed: ${
-            (json && (json.error || json.message)) || `HTTP ${resp.status} ${resp.statusText}`
-          }`,
-        );
+        const errorMessage = (json && (json.error || json.message)) || `HTTP ${resp.status} ${resp.statusText}`;
+        showError(`Analysis failed: ${errorMessage}`);
       }
     } catch (err: any) {
       const errorMessage = err?.message || String(err);
