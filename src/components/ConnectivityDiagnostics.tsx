@@ -83,7 +83,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
       const payload = {
         model: "res.partner",
         method: "search_read",
-        args: [[[]]],
+        args: [[]],
         kwargs: { fields: ["id"], limit: 1 },
       };
 
