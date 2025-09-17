@@ -78,8 +78,13 @@ export const CustomQuery: React.FC<Props> = ({ relayHost, apiKey }) => {
         );
       }
     } catch (err: any) {
-      setResult({ error: err?.message || String(err) });
-      showError(err?.message || String(err));
+      const errorMessage = err?.message || String(err);
+      setResult({ error: errorMessage });
+      if (errorMessage.toLowerCase().includes("failed to fetch")) {
+        showError("Network Error: Failed to fetch. Check Relay Host URL, server status, and CORS settings.");
+      } else {
+        showError(errorMessage);
+      }
     } finally {
       dismissToast(toastId);
       setRunning(false);

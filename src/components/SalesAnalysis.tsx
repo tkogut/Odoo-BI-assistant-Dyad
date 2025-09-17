@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 
 interface Props {
@@ -56,8 +56,13 @@ export const SalesAnalysis: React.FC<Props> = ({ relayHost, apiKey }) => {
         );
       }
     } catch (err: any) {
-      setResult({ error: err?.message || String(err) });
-      showError(err?.message || String(err));
+      const errorMessage = err?.message || String(err);
+      setResult({ error: errorMessage });
+      if (errorMessage.toLowerCase().includes("failed to fetch")) {
+        showError("Network Error: Failed to fetch. Check Relay Host URL, server status, and CORS settings.");
+      } else {
+        showError(errorMessage);
+      }
     } finally {
       dismissToast(toastId);
       setRunning(false);
@@ -72,10 +77,15 @@ export const SalesAnalysis: React.FC<Props> = ({ relayHost, apiKey }) => {
       <CardContent className="space-y-4">
         <div>
           <Label>Period</Label>
-          <Select value={period} onChange={(e) => setPeriod(e as any)}>
-            <option value="monthly">Monthly</option>
-            <option value="quarterly">Quarterly</option>
-            <option value="yearly">Yearly</option>
+          <Select value={period} onValueChange={(value) => setPeriod(value as any)}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select period" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="monthly">Monthly</SelectItem>
+              <SelectItem value="quarterly">Quarterly</SelectItem>
+              <SelectItem value="yearly">Yearly</SelectItem>
+            </SelectContent>
           </Select>
         </div>
 
