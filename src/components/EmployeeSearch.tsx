@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
+import { exportToCsv } from "@/lib/exportCsv";
 
 interface EmployeeSearchProps {
   relayHost: string;
@@ -147,6 +148,25 @@ export const EmployeeSearch = ({ relayHost, apiKey }: EmployeeSearchProps) => {
     };
   };
 
+  const handleCopy = async (obj: unknown) => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(obj, null, 2));
+      showSuccess("Copied to clipboard.");
+    } catch (e) {
+      console.error(e);
+      showError("Failed to copy to clipboard.");
+    }
+  };
+
+  const handleExportCsv = () => {
+    if (!columns || columns.length === 0 || !rows || rows.length === 0) {
+      showError("No tabular results to export.");
+      return;
+    }
+    exportToCsv("employees.csv", columns, rows);
+    showSuccess("CSV download started.");
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -182,7 +202,14 @@ export const EmployeeSearch = ({ relayHost, apiKey }: EmployeeSearchProps) => {
 
         {columns.length > 0 && (
           <div>
-            <h3 className="text-lg font-medium mb-2">Results</h3>
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-lg font-medium">Results</h3>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => handleCopy({ columns, rows })}>Copy JSON</Button>
+                <Button variant="ghost" onClick={handleExportCsv}>Export CSV</Button>
+              </div>
+            </div>
+
             <Table>
               <TableHeader>
                 <TableRow>

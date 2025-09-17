@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
+import { exportToCsv } from "@/lib/exportCsv";
 
 interface SalesAnalysisProps {
   relayHost: string;
@@ -130,6 +131,27 @@ export const SalesAnalysis = ({ relayHost, apiKey }: SalesAnalysisProps) => {
     return { salesByCustomer, productDrilldown };
   };
 
+  const handleCopy = async (obj: unknown) => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(obj, null, 2));
+      showSuccess("Copied to clipboard.");
+    } catch (e) {
+      console.error(e);
+      showError("Failed to copy to clipboard.");
+    }
+  };
+
+  const handleExportTopProducts = () => {
+    if (!data || !data.top_products) {
+      showError("No top products to export.");
+      return;
+    }
+    const columns = ["id", "name", "qty", "revenue"];
+    const rows = data.top_products.map((p) => [p.id, p.name, p.qty, p.revenue]);
+    exportToCsv("top_products.csv", columns, rows);
+    showSuccess("CSV download started.");
+  };
+
   return (
     <div className="space-y-6">
       <Card>
@@ -201,6 +223,16 @@ export const SalesAnalysis = ({ relayHost, apiKey }: SalesAnalysisProps) => {
               <CardTitle>Top Products Details</CardTitle>
             </CardHeader>
             <CardContent>
+              <div className="flex justify-between items-center mb-3">
+                <div />
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => handleCopy(renderMachineBlocks(data).kpiBlock)}>Copy KPIs</Button>
+                  <Button variant="ghost" onClick={() => handleCopy(renderMachineBlocks(data).chartBlock)}>Copy Chart</Button>
+                  <Button variant="ghost" onClick={() => handleCopy(renderMachineBlocks(data).tableBlock)}>Copy Table JSON</Button>
+                  <Button variant="ghost" onClick={handleExportTopProducts}>Export CSV</Button>
+                </div>
+              </div>
+
               <Table>
                 <TableHeader>
                   <TableRow>
