@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { exportToCsv } from "@/lib/exportCsv";
+import { analyzeSales } from "@/lib/mcpApi";
 
 interface SalesAnalysisProps {
   relayHost: string;
@@ -44,27 +45,22 @@ export const SalesAnalysis = ({ relayHost, apiKey }: SalesAnalysisProps) => {
     const toastId = showLoading("Fetching sales data...");
 
     try {
-      const response = await fetch(`${relayHost}/api/sales/analyze`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": apiKey,
-        },
-        body: JSON.stringify({
-          start_date: startDate,
-          end_date: endDate,
-          limit: Number(limit),
-        }),
+      const resp = await analyzeSales(relayHost, apiKey, {
+        start_date: startDate,
+        end_date: endDate,
+        limit: Number(limit),
       });
 
-      const result = await response.json();
       dismissToast(toastId);
 
-      if (response.ok && result.success) {
-        setData(result);
+      if (resp.ok && resp.data) {
+        // Some servers wrap a success flag; we prefer the returned data as SalesData.
+        // If server uses { success: true, ...payload } style, the payload should be the root.
+        const payload = (resp.data && (resp.data as any).success && (resp.data as any).result) ? (resp.data as any).result : resp.data;
+        setData(payload as SalesData);
         showSuccess("Sales data loaded successfully.");
       } else {
-        throw new Error(result.error || "Failed to fetch sales data.");
+        throw new Error(resp.error || `Failed to fetch sales data (status ${resp.status})`);
       }
     } catch (error) {
       dismissToast(toastId);

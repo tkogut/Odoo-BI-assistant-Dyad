@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { exportToCsv } from "@/lib/exportCsv";
+import { searchEmployee } from "@/lib/mcpApi";
 
 interface EmployeeSearchProps {
   relayHost: string;
@@ -100,25 +101,17 @@ export const EmployeeSearch = ({ relayHost, apiKey }: EmployeeSearchProps) => {
     const toastId = showLoading("Searching employees...");
 
     try {
-      const resp = await fetch(`${relayHost}/api/search_employee`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": apiKey,
-        },
-        body: JSON.stringify({ name, limit }),
-      });
+      const resp = await searchEmployee(relayHost, apiKey, { name, limit });
 
-      const result = await resp.json();
       dismissToast(toastId);
 
-      if (!resp.ok || (result && result.success === false)) {
-        const msg = result?.error || result?.message || `Search failed (status ${resp.status})`;
-        showError(msg);
-        setRawResult(result);
+      if (!resp.ok) {
+        showError(resp.error || `Search failed (status ${resp.status})`);
+        setRawResult(resp.data ?? null);
         return;
       }
 
+      const result = resp.data;
       const records = extractRecords(result);
       if (!records) {
         showError("No employee records found in response. See raw output for debugging.");

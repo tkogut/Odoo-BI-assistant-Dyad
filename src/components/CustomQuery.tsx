@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/table";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { exportToCsv } from "@/lib/exportCsv";
+import { executeMethod } from "@/lib/mcpApi";
 
 interface CustomQueryProps {
   relayHost: string;
@@ -88,30 +89,22 @@ export const CustomQuery = ({ relayHost, apiKey }: CustomQueryProps) => {
     const toastId = showLoading("Executing method...");
 
     try {
-      const resp = await fetch(`${relayHost}/api/execute_method`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": apiKey,
-        },
-        body: JSON.stringify({
-          model,
-          method,
-          args: parsedArgs,
-          kwargs: parsedKwargs,
-        }),
+      const resp = await executeMethod(relayHost, apiKey, {
+        model,
+        method,
+        args: parsedArgs,
+        kwargs: parsedKwargs,
       });
 
-      const result = await resp.json();
       dismissToast(toastId);
 
-      if (!resp.ok || (result && result.success === false)) {
-        const msg = result?.error || result?.message || `Execution failed (status ${resp.status})`;
-        showError(msg);
-        setRawResult(result);
+      if (!resp.ok) {
+        showError(resp.error || `Execution failed (status ${resp.status})`);
+        setRawResult(resp.data ?? null);
         return;
       }
 
+      const result = resp.data;
       const records = extractRecords(result);
       if (records) {
         buildTableFromRecords(records);
