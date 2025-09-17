@@ -186,27 +186,27 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
           </Button>
         </div>
 
-        <div>
-          <h4 className="font-medium">What this does</h4>
-          <p className="text-sm text-muted-foreground">
-            1) Performs a GET to the Relay Host to check basic reachability and mixed-content issues.
-            2) Performs a POST to /api/execute_method with your API key header to surface CORS, preflight,
-            authentication and server errors. Results and any error messages will be shown below.
-          </p>
-        </div>
-
-        <div>
-          <h4 className="font-medium">Basic GET result</h4>
-          <pre className="bg-muted p-3 rounded text-sm overflow-auto">
-            {JSON.stringify(basicResult, null, 2)}
-          </pre>
-        </div>
-
-        <div>
-          <h4 className="font-medium">POST /api/execute_method result</h4>
-          <pre className="bg-muted p-3 rounded text-sm overflow-auto">
-            {JSON.stringify(postResult, null, 2)}
-          </pre>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Basic GET Result</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <pre className="bg-muted p-3 rounded text-sm overflow-auto h-48">
+                {JSON.stringify(basicResult, null, 2)}
+              </pre>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">POST /api/execute_method Result</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <pre className="bg-muted p-3 rounded text-sm overflow-auto h-48">
+                {JSON.stringify(postResult, null, 2)}
+              </pre>
+            </CardContent>
+          </Card>
         </div>
 
         <div>
