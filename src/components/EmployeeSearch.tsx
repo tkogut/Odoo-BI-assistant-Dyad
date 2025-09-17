@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/table";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { exportToCsv } from "@/lib/exportCsv";
-import { searchEmployee } from "@/lib/relayClient";
 
 interface EmployeeSearchProps {
   relayHost: string;
@@ -101,8 +100,24 @@ export const EmployeeSearch = ({ relayHost, apiKey }: EmployeeSearchProps) => {
     const toastId = showLoading("Searching employees...");
 
     try {
-      const result = await searchEmployee(relayHost, apiKey, { name, limit });
+      const resp = await fetch(`${relayHost}/api/search_employee`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": apiKey,
+        },
+        body: JSON.stringify({ name, limit }),
+      });
+
+      const result = await resp.json();
       dismissToast(toastId);
+
+      if (!resp.ok || (result && result.success === false)) {
+        const msg = result?.error || result?.message || `Search failed (status ${resp.status})`;
+        showError(msg);
+        setRawResult(result);
+        return;
+      }
 
       const records = extractRecords(result);
       if (!records) {
@@ -117,7 +132,7 @@ export const EmployeeSearch = ({ relayHost, apiKey }: EmployeeSearchProps) => {
     } catch (err) {
       dismissToast(toastId);
       console.error(err);
-      showError(err instanceof Error ? err.message : "Network or parsing error while searching employees.");
+      showError("Network or parsing error while searching employees.");
       setRawResult(err);
     } finally {
       setLoading(false);
