@@ -37,10 +37,10 @@ export const OdooBiAssistant = () => {
           <SalesAnalysis relayHost={relayHost} apiKey={apiKey} />
         </TabsContent>
         <TabsContent value="employee" className="mt-4">
-          <EmployeeSearch />
+          <EmployeeSearch relayHost={relayHost} apiKey={apiKey} />
         </TabsContent>
         <TabsContent value="custom" className="mt-4">
-          <CustomQuery />
+          <CustomQuery relayHost={relayHost} apiKey={apiKey} />
         </TabsContent>
       </Tabs>
     </div>
