@@ -138,6 +138,15 @@ export const EmployeeSearch = ({ relayHost, apiKey }: EmployeeSearchProps) => {
     }
   };
 
+  const followupExecuteMethodPayload = (n: number | string) => {
+    return {
+      model: "hr.employee",
+      method: "search_read",
+      args: [[["name", "ilike", String(n)]]],
+      kwargs: { fields: ["id", "name", "work_email", "work_phone"], limit: 20 },
+    };
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -192,22 +201,31 @@ export const EmployeeSearch = ({ relayHost, apiKey }: EmployeeSearchProps) => {
                 ))}
               </TableBody>
             </Table>
-          </div>
-        )}
 
-        {rawResult && (
-          <div>
-            <h3 className="text-lg font-medium mb-2">Machine-friendly output (table format)</h3>
-            <pre className="bg-muted p-3 rounded text-sm overflow-auto">
-              {JSON.stringify(
-                {
-                  columns,
-                  rows,
-                },
-                null,
-                2,
-              )}
-            </pre>
+            <div className="mt-4">
+              <h4 className="font-medium">Machine-friendly table</h4>
+              <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+                {JSON.stringify({ columns, rows }, null, 2)}
+              </pre>
+            </div>
+
+            <div className="mt-4">
+              <h4 className="font-medium">Summary</h4>
+              <p className="text-sm text-muted-foreground">
+                Found {rows.length} employee(s) matching "{name}" (limit {limit}).
+              </p>
+            </div>
+
+            <div className="mt-4">
+              <h4 className="font-medium">Follow-up</h4>
+              <p className="text-sm mb-2">To retrieve full employee records (unmasked) run:</p>
+              <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+                {JSON.stringify(followupExecuteMethodPayload(name || "%"), null, 2)}
+              </pre>
+              <p className="text-xs text-muted-foreground mt-2">
+                Note: The API key must have permission to read hr.employee.
+              </p>
+            </div>
           </div>
         )}
 

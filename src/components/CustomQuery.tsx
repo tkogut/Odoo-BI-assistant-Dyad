@@ -214,6 +214,11 @@ export const CustomQuery = ({ relayHost, apiKey }: CustomQueryProps) => {
             <pre className="bg-muted p-3 rounded text-sm overflow-auto">
               {JSON.stringify({ columns, rows }, null, 2)}
             </pre>
+
+            <div className="mt-4">
+              <h4 className="font-medium">Summary</h4>
+              <p className="text-sm text-muted-foreground">{`Execution returned ${rows.length} row(s) for ${model}.${method}.`}</p>
+            </div>
           </div>
         )}
 
@@ -223,6 +228,19 @@ export const CustomQuery = ({ relayHost, apiKey }: CustomQueryProps) => {
             <pre className="bg-muted p-3 rounded text-sm overflow-auto">
               {JSON.stringify(rawResult, null, 2)}
             </pre>
+
+            <div className="mt-4">
+              <h4 className="font-medium">Suggested debug payload</h4>
+              <p className="text-sm mb-2">If the result is empty or an error, try a simple search_read to validate access:</p>
+              <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+{JSON.stringify({
+  model,
+  method: "search_read",
+  args: [[[]]],
+  kwargs: { fields: ["id", "name"], limit: 5 },
+}, null, 2)}
+              </pre>
+            </div>
           </div>
         )}
       </CardContent>

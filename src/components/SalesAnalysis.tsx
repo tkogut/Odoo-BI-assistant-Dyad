@@ -78,6 +78,58 @@ export const SalesAnalysis = ({ relayHost, apiKey }: SalesAnalysisProps) => {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }).format(value);
   };
 
+  const renderMachineBlocks = (d: SalesData) => {
+    const kpiBlock = {
+      total_sales: d.total_sales,
+      unit: "EUR",
+      period: `${startDate}:${endDate}`,
+    };
+
+    const tableBlock = {
+      columns: ["id", "name", "qty", "revenue"],
+      rows: d.top_products.map((p) => [p.id, p.name, p.qty, p.revenue]),
+    };
+
+    const chartBlock = {
+      series: [{ name: "Revenue", data: d.top_products.map((p) => p.revenue) }],
+      labels: d.top_products.map((p) => p.name),
+    };
+
+    return { kpiBlock, tableBlock, chartBlock };
+  };
+
+  const renderHumanSummary = (d: SalesData) => {
+    if (!d.top_products || d.top_products.length === 0) {
+      return `Total sales between ${startDate} and ${endDate} were ${formatCurrency(d.total_sales)} across ${d.orders_count} orders. No top-products data available.`;
+    }
+    const top = d.top_products[0];
+    return `Between ${startDate} and ${endDate} total sales were ${formatCurrency(d.total_sales)} across ${d.orders_count} orders. Top product: ${top.name} (id ${top.id}) with revenue ${formatCurrency(top.revenue)}.`;
+  };
+
+  const followupPayloads = (d: SalesData) => {
+    // Suggest a read_group to get top customers by revenue
+    const salesByCustomer = {
+      model: "sale.order",
+      method: "read_group",
+      args: [[["date_order", ">=", startDate], ["date_order", "<=", endDate]]],
+      kwargs: {
+        fields: ["partner_id", "amount_total"],
+        groupby: ["partner_id"],
+        limit: 10,
+        orderby: "amount_total desc",
+      },
+    };
+
+    const productDrilldown = {
+      model: "product.product",
+      method: "search_read",
+      args: [[["id", "in", d.top_products.map((p) => p.id)]]],
+      kwargs: { fields: ["id", "name", "categ_id", "standard_price", "list_price"] },
+    };
+
+    return { salesByCustomer, productDrilldown };
+  };
+
   return (
     <div className="space-y-6">
       <Card>
@@ -169,6 +221,60 @@ export const SalesAnalysis = ({ relayHost, apiKey }: SalesAnalysisProps) => {
                   ))}
                 </TableBody>
               </Table>
+
+              {/* Machine-friendly outputs */}
+              <div className="mt-4">
+                <h3 className="text-lg font-medium mb-2">Machine-friendly outputs</h3>
+                <div className="space-y-3">
+                  <div>
+                    <h4 className="font-medium">KPIs</h4>
+                    <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+                      {JSON.stringify(renderMachineBlocks(data).kpiBlock, null, 2)}
+                    </pre>
+                  </div>
+
+                  <div>
+                    <h4 className="font-medium">Chart (series + labels)</h4>
+                    <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+                      {JSON.stringify(renderMachineBlocks(data).chartBlock, null, 2)}
+                    </pre>
+                  </div>
+
+                  <div>
+                    <h4 className="font-medium">Top products (table)</h4>
+                    <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+                      {JSON.stringify(renderMachineBlocks(data).tableBlock, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              </div>
+
+              {/* Human summary */}
+              <div className="mt-4">
+                <h3 className="text-lg font-medium mb-2">Summary</h3>
+                <p className="text-sm text-muted-foreground">{renderHumanSummary(data)}</p>
+              </div>
+
+              {/* Follow-up suggestions */}
+              <div className="mt-4">
+                <h3 className="text-lg font-medium mb-2">Follow-up queries (copy & run)</h3>
+                <p className="text-sm mb-2">Suggested minimal drilldowns to run via POST /api/execute_method:</p>
+                <div className="space-y-2">
+                  <div>
+                    <h4 className="font-medium">Top customers by revenue</h4>
+                    <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+{JSON.stringify(followupPayloads(data).salesByCustomer, null, 2)}
+                    </pre>
+                  </div>
+                  <div>
+                    <h4 className="font-medium">Product details for top products</h4>
+                    <pre className="bg-muted p-3 rounded text-sm overflow-auto">
+{JSON.stringify(followupPayloads(data).productDrilldown, null, 2)}
+                    </pre>
+                  </div>
+                </div>
+              </div>
+
             </CardContent>
           </Card>
         </div>
