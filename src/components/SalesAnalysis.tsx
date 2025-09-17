@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { exportToCsv } from "@/lib/exportCsv";
+import { analyzeSales as analyzeSalesRequest } from "@/lib/mcpRelayClient";
 
 interface SalesAnalysisProps {
   relayHost: string;
@@ -44,28 +45,15 @@ export const SalesAnalysis = ({ relayHost, apiKey }: SalesAnalysisProps) => {
     const toastId = showLoading("Fetching sales data...");
 
     try {
-      const response = await fetch(`${relayHost}/api/sales/analyze`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": apiKey,
-        },
-        body: JSON.stringify({
-          start_date: startDate,
-          end_date: endDate,
-          limit: Number(limit),
-        }),
-      });
+      const result = await analyzeSalesRequest(relayHost, apiKey, startDate, endDate, Number(limit));
 
-      const result = await response.json();
-      dismissToast(toastId);
-
-      if (response.ok && result.success) {
-        setData(result);
-        showSuccess("Sales data loaded successfully.");
-      } else {
-        throw new Error(result.error || "Failed to fetch sales data.");
+      // Some relays return success flag even with 200; respect that
+      if (result && result.success === false) {
+        throw new Error(result.error || result.message || "Failed to fetch sales data.");
       }
+
+      setData(result);
+      showSuccess("Sales data loaded successfully.");
     } catch (error) {
       dismissToast(toastId);
       showError(error instanceof Error ? error.message : "An unknown error occurred.");
