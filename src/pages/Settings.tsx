@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
@@ -7,16 +9,40 @@ import { Label } from "@/components/ui/label";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 import { useRpcConfirm } from "@/components/rpc-confirm";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
+import ThemeToggle from "@/components/ThemeToggle";
 
 const DEFAULT_RELAY = "http://localhost:8000";
+
+type RelayConfig = {
+  id: string;
+  name: string;
+  url: string;
+  apiKey?: string;
+};
+
+type ConnectionTest = {
+  id: string;
+  when: string;
+  type: "GET" | "POST";
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  error?: string;
+  preview?: any;
+};
 
 const Settings: React.FC = () => {
   const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
   const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "");
   const [localRelay, setLocalRelay] = useState<string>(relayHost);
   const [localKey, setLocalKey] = useState<string>(apiKey);
+
+  const [configs, setConfigs] = useLocalStorage<RelayConfig[]>("relayConfigs", []);
+  const [tests, setTests] = useLocalStorage<ConnectionTest[]>("connectionTests", []);
+
   const [testingResult, setTestingResult] = useState<any>(null);
   const [testing, setTesting] = useState(false);
+  const [newConfigName, setNewConfigName] = useState("");
 
   const confirmRpc = useRpcConfirm();
 
@@ -61,6 +87,9 @@ const Settings: React.FC = () => {
     setTesting(true);
     setTestingResult(null);
     const toastId = showLoading("Testing connection...");
+    const testId = Date.now().toString();
+    const when = new Date().toISOString();
+
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -84,18 +113,67 @@ const Settings: React.FC = () => {
       };
       setTestingResult(result);
 
+      // Record test in history
+      const entry: ConnectionTest = {
+        id: testId,
+        when,
+        type: "GET",
+        ok: resp.ok,
+        status: resp.status,
+        statusText: resp.statusText,
+        preview: parsed ?? null,
+      };
+      setTests((prev) => [entry, ...(prev || [])].slice(0, 50));
+
       if (resp.ok) {
         showSuccess("Relay reachable (basic GET succeeded).");
       } else {
         showError(`Basic GET returned ${resp.status}`);
       }
     } catch (err: any) {
-      setTestingResult({ error: err?.message || String(err) });
-      showError(err?.message || "Connection test failed.");
+      const errMsg = err?.message || String(err);
+      setTestingResult({ error: errMsg });
+      const entry: ConnectionTest = {
+        id: testId,
+        when,
+        type: "GET",
+        error: errMsg,
+      };
+      setTests((prev) => [entry, ...(prev || [])].slice(0, 50));
+      showError(errMsg || "Connection test failed.");
     } finally {
       dismissToast(toastId);
       setTesting(false);
     }
+  };
+
+  // Named relay config helpers
+  const saveNamedConfig = () => {
+    if (!newConfigName.trim()) {
+      showError("Please provide a name for this config.");
+      return;
+    }
+    const id = Date.now().toString();
+    const cfg: RelayConfig = { id, name: newConfigName.trim(), url: localRelay, apiKey: localKey || undefined };
+    setConfigs((prev) => [cfg, ...(prev || [])]);
+    setNewConfigName("");
+    showSuccess("Saved relay configuration.");
+  };
+
+  const applyConfig = (cfg: RelayConfig) => {
+    setLocalRelay(cfg.url);
+    setLocalKey(cfg.apiKey ?? "");
+    showSuccess(`Applied config "${cfg.name}".`);
+  };
+
+  const deleteConfig = (id: string) => {
+    setConfigs((prev) => (prev || []).filter((c) => c.id !== id));
+    showSuccess("Deleted configuration.");
+  };
+
+  const clearHistory = () => {
+    setTests([]);
+    showSuccess("Cleared connection test history.");
   };
 
   return (
@@ -107,6 +185,7 @@ const Settings: React.FC = () => {
             <p className="text-sm text-muted-foreground">Configure Relay Host and API Key (persisted in localStorage).</p>
           </div>
           <div className="flex items-center gap-3">
+            <ThemeToggle />
             <Link to="/" className="text-sm text-blue-600 hover:underline">
               Back to Home
             </Link>
@@ -119,24 +198,26 @@ const Settings: React.FC = () => {
           </CardHeader>
 
           <CardContent className="space-y-4">
-            <div>
-              <Label htmlFor="relay">Relay Host</Label>
-              <Input
-                id="relay"
-                value={localRelay}
-                onChange={(e) => setLocalRelay(e.target.value)}
-                placeholder="http://127.0.0.1:8000"
-              />
-            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="relay">Relay Host</Label>
+                <Input
+                  id="relay-host"
+                  value={localRelay}
+                  onChange={(e) => setLocalRelay(e.target.value)}
+                  placeholder="http://127.0.0.1:8000"
+                />
+              </div>
 
-            <div>
-              <Label htmlFor="apikey">API Key (X-API-Key)</Label>
-              <Input
-                id="apikey"
-                value={localKey}
-                onChange={(e) => setLocalKey(e.target.value)}
-                placeholder="Optional API key"
-              />
+              <div>
+                <Label htmlFor="apikey">API Key (X-API-Key)</Label>
+                <Input
+                  id="apikey"
+                  value={localKey}
+                  onChange={(e) => setLocalKey(e.target.value)}
+                  placeholder="Optional API key"
+                />
+              </div>
             </div>
 
             <div className="text-sm text-muted-foreground">
@@ -161,15 +242,87 @@ const Settings: React.FC = () => {
                 </pre>
               </div>
             </div>
+
+            <div>
+              <h4 className="font-medium">Named Relay Configurations</h4>
+              <p className="text-sm text-muted-foreground mb-2">Save multiple relay configurations for quick switching.</p>
+
+              <div className="flex gap-2 mb-3">
+                <Input placeholder="Config name" value={newConfigName} onChange={(e) => setNewConfigName(e.target.value)} />
+                <Button onClick={saveNamedConfig}>Save Config</Button>
+              </div>
+
+              <div className="space-y-2">
+                {(configs || []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No saved configs.</p>
+                ) : (
+                  configs.map((c) => (
+                    <div key={c.id} className="flex items-center justify-between p-2 border rounded">
+                      <div>
+                        <div className="font-medium">{c.name}</div>
+                        <div className="text-sm text-muted-foreground">{c.url}</div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button variant="ghost" onClick={() => applyConfig(c)}>Apply</Button>
+                        <Button variant="ghost" onClick={() => deleteConfig(c.id)}>Delete</Button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </CardContent>
 
           <CardFooter className="flex gap-2">
             <Button onClick={onSave}>Save Settings</Button>
-            <Button variant="ghost" onClick={onReset}>
-              Reset to Defaults
-            </Button>
+            <Button variant="ghost" onClick={onReset}>Reset to Defaults</Button>
           </CardFooter>
         </Card>
+
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Connection Test History</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex justify-between items-center mb-2">
+                <div className="text-sm text-muted-foreground">Recent GET/POST tests (most recent first).</div>
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => setTests([])}>Clear</Button>
+                </div>
+              </div>
+              <div className="space-y-2 max-h-64 overflow-auto">
+                {(tests || []).length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No tests recorded yet.</div>
+                ) : (
+                  tests.map((t) => (
+                    <div key={t.id} className="p-2 border rounded">
+                      <div className="text-xs text-muted-foreground">{new Date(t.when).toLocaleString()}</div>
+                      <div className="font-medium">{t.type} {t.ok ? "OK" : "Error"}</div>
+                      {t.status !== undefined && <div className="text-sm">HTTP {t.status} {t.statusText}</div>}
+                      {t.error && <div className="text-sm text-red-600">{t.error}</div>}
+                    </div>
+                  ))
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Quick Actions</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Apply current values to saved settings (does not create a named config).</div>
+                <div className="flex gap-2">
+                  <Button onClick={onSave}>Save</Button>
+                  <Button variant="ghost" onClick={onReset}>Reset</Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );

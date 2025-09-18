@@ -9,6 +9,7 @@ import { AIChat } from "@/components/AIChat";
 import AICustomQuery from "@/components/AICustomQuery";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
+import ThemeToggle from "@/components/ThemeToggle";
 
 const Index = () => {
   const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8000");
@@ -23,6 +24,7 @@ const Index = () => {
             <p className="text-sm text-muted-foreground">Use the diagnostics panel to troubleshoot network/CORS/TLS issues.</p>
           </div>
           <div className="flex items-center gap-4">
+            <ThemeToggle />
             <Link to="/settings" className="text-sm text-blue-600 hover:underline">
               Settings
             </Link>

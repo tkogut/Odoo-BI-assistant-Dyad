@@ -88,13 +88,6 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
   const mergedWsIds = useRef<Set<number>>(new Set());
 
   useEffect(() => {
-    if (scrollAreaRef.current) {
-      scrollAreaRef.current.scrollTo({ top: scrollAreaRef.current.scrollHeight, behavior: "smooth" });
-    }
-  }, [messages]);
-
-  // Merge incoming websocket messages into the UI message list
-  useEffect(() => {
     if (!wsMessages || wsMessages.length === 0) return;
     setMessages((prev) => {
       const existingIds = new Set(prev.map((m) => m.id));
@@ -110,6 +103,25 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsMessages]);
+
+  // Auto-scroll only if user is near the bottom already.
+  useEffect(() => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    try {
+      const threshold = 150; // px from bottom to consider "near bottom"
+      const scrollTop = el.scrollTop;
+      const clientHeight = el.clientHeight;
+      const scrollHeight = el.scrollHeight;
+      const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+      const shouldScroll = distanceFromBottom < threshold;
+      if (shouldScroll) {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      }
+    } catch {
+      // ignore
+    }
+  }, [messages]);
 
   // Simple helper to convert employee results into a readable summary string
   const formatEmployeeSummary = (results: any[]) => {
