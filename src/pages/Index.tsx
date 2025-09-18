@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import { MadeWithDyad } from "@/components/made-with-dyad";
 import ConnectivityDiagnostics from "@/components/ConnectivityDiagnostics";
 import { EmployeeSearch } from "@/components/EmployeeSearch";
@@ -7,10 +7,11 @@ import { SalesAnalysis } from "@/components/SalesAnalysis";
 import { AIChat } from "@/components/AIChat";
 import AICustomQuery from "@/components/AICustomQuery";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 
 const Index = () => {
-  const [relayHost, setRelayHost] = useState<string>("http://localhost:8000");
-  const [apiKey, setApiKey] = useState<string>("");
+  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8000");
+  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "");
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">
