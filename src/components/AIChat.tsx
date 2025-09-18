@@ -20,6 +20,45 @@ interface Message {
   content: string;
 }
 
+type RelayResult = {
+  ok: boolean;
+  status: number;
+  parsed?: any | null;
+  text?: string | null;
+};
+
+/**
+ * Post a payload to the relay and attempt to parse JSON, falling back to raw text.
+ * Returns an object containing ok/status/parsed/text.
+ */
+async function postToRelay(url: string, payload: any, apiKey?: string, timeoutMs = 30000): Promise<RelayResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "X-API-Key": apiKey } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const text = await resp.text().catch(() => "");
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+
+    return { ok: resp.ok, status: resp.status, parsed, text };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -28,9 +67,48 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
 
   useEffect(() => {
     if (scrollAreaRef.current) {
-      scrollAreaRef.current.scrollTo({ top: scrollAreaRef.current.scrollHeight, behavior: 'smooth' });
+      scrollAreaRef.current.scrollTo({ top: scrollAreaRef.current.scrollHeight, behavior: "smooth" });
     }
   }, [messages]);
+
+  // Simple helper to convert employee results into a readable summary string
+  const formatEmployeeSummary = (results: any[]) => {
+    if (!results || results.length === 0) {
+      return "No matching employees were found.";
+    }
+    const lines = results.slice(0, 5).map((r: any) => {
+      const dept = r.department_id ? ` (${r.department_id[1]})` : "";
+      const email = r.work_email ? ` — ${r.work_email}` : "";
+      const phone = r.work_phone ? ` — ${r.work_phone}` : "";
+      return `• ${r.name}${dept}${email}${phone}`;
+    });
+    return `Found ${results.length} employee(s):\n` + lines.join("\n");
+  };
+
+  // Fallback: when ai.assistant model doesn't exist, try a targeted hr.employee search using user's message.
+  const runFallbackEmployeeSearch = async (userMessage: string) => {
+    const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+    const payload = {
+      model: "hr.employee",
+      method: "search_read",
+      args: [[["name", "ilike", userMessage]]],
+      kwargs: { fields: ["name", "work_email", "work_phone", "department_id"], limit: 10 },
+    };
+
+    const res = await postToRelay(url, payload, apiKey, 15000);
+    if (res.ok && res.parsed && res.parsed.success) {
+      return formatEmployeeSummary(res.parsed.result);
+    }
+
+    // If non-JSON success (some relays may return plain arrays/objects), try parsed or text
+    if (res.parsed && Array.isArray(res.parsed)) {
+      return formatEmployeeSummary(res.parsed);
+    }
+    if (res.text) {
+      return `Fallback employee search attempted but relay returned non-JSON response: ${res.text.slice(0, 500)}`;
+    }
+    return `Fallback employee search failed (HTTP ${res.status}).`;
+  };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,10 +119,12 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
       return;
     }
 
+    const userMessageText = input.trim();
+
     const userMessage: Message = {
       id: Date.now(),
       role: "user",
-      content: input,
+      content: userMessageText,
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -54,63 +134,76 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
 
     try {
       const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout for AI
 
-      // We'll assume a hypothetical `ai.assistant` model with a `query` method
+      // Build payload - the relay might expect the conversation as context
       const payload = {
         model: "ai.assistant",
         method: "query",
         args: [
-          // Pass the conversation history for context
-          messages.map(m => ({ role: m.role, content: m.content })),
-          // Pass the new user message
-          { role: 'user', content: input }
+          // conversation history (only minimal context to keep payload small)
+          messages.map((m) => ({ role: m.role, content: m.content })),
+          // new user message
+          { role: "user", content: userMessageText },
         ],
         kwargs: {},
       };
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { "X-API-Key": apiKey } : {}),
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      const res = await postToRelay(url, payload, apiKey, 30000);
 
-      clearTimeout(timeout);
-      const json = await resp.json();
+      // If parsed JSON looks like an RPC response
+      const textLower = (res.text || "").toLowerCase();
 
-      if (resp.ok && json.success) {
+      const aiMissing =
+        // JSON error structures
+        (res.parsed &&
+          ((res.parsed.error && typeof res.parsed.error === "string" && res.parsed.error.toLowerCase().includes("object ai.assistant")) ||
+            (res.parsed.message && typeof res.parsed.message === "string" && res.parsed.message.toLowerCase().includes("object ai.assistant")))) ||
+        // plain text (including XML-RPC Fault) that mentions the missing object
+        textLower.includes("object ai.assistant doesn't exist".toLowerCase()) ||
+        textLower.includes("object ai.assistant does not exist") ||
+        textLower.includes("object ai.assistant doesn't exist");
+
+      if (res.ok && res.parsed && res.parsed.success) {
         const assistantMessage: Message = {
           id: Date.now() + 1,
           role: "assistant",
-          content: json.result,
+          content: typeof res.parsed.result === "string" ? res.parsed.result : JSON.stringify(res.parsed.result),
         };
         setMessages((prev) => [...prev, assistantMessage]);
         showSuccess("AI Assistant responded.");
-      } else {
-        const errorMessage = json.error || json.message || `HTTP ${resp.status} ${resp.statusText}`;
-        showError(`AI query failed: ${errorMessage}`);
-        // Add an error message to the chat
-        const errorMessageObj: Message = {
+      } else if (aiMissing) {
+        // Detected missing ai.assistant model — run fallback
+        showError("ai.assistant model not found on relay; attempting targeted fallback queries.");
+        const fallbackText = await runFallbackEmployeeSearch(userMessageText);
+        const assistantMessage: Message = {
           id: Date.now() + 1,
           role: "assistant",
-          content: `Sorry, I encountered an error: ${errorMessage}`,
+          content:
+            `I couldn't find the ai.assistant model on the relay. I ran an employee search fallback using your query:\n\n${fallbackText}\n\nIf you expected an AI assistant, ensure your relay exposes the ai.assistant model or configure an AI-capable backend.`,
         };
-        setMessages((prev) => [...prev, errorMessageObj]);
+        setMessages((prev) => [...prev, assistantMessage]);
+      } else {
+        // Generic failure: include parsed errors or text preview
+        const errorMessage =
+          (res.parsed && (res.parsed.error || res.parsed.message)) ||
+          (res.text ? res.text.slice(0, 1000) : `HTTP ${res.status}`);
+        showError(`AI query failed: ${String(errorMessage).slice(0, 200)}`);
+        const assistantMessage: Message = {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: `Sorry, I couldn't complete the request: ${String(errorMessage)}`,
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
       }
     } catch (err: any) {
       const errorMessage = err?.message || String(err);
       showError(errorMessage);
-       const errorMessageObj: Message = {
-          id: Date.now() + 1,
-          role: "assistant",
-          content: `Sorry, I encountered a network error: ${errorMessage}`,
-        };
-        setMessages((prev) => [...prev, errorMessageObj]);
+      const errorMessageObj: Message = {
+        id: Date.now() + 1,
+        role: "assistant",
+        content: `Sorry, I encountered a network error: ${errorMessage}`,
+      };
+      setMessages((prev) => [...prev, errorMessageObj]);
     } finally {
       dismissToast(toastId);
       setIsLoading(false);
@@ -148,23 +241,23 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
                 >
                   <p className="text-sm whitespace-pre-wrap">{message.content}</p>
                 </div>
-                 {message.role === "user" && (
+                {message.role === "user" && (
                   <div className="p-2 bg-muted rounded-full">
                     <User className="w-6 h-6" />
                   </div>
                 )}
               </div>
             ))}
-             {isLoading && (
-                <div className="flex items-start gap-3 justify-start">
-                   <div className="p-2 bg-muted rounded-full">
-                    <Bot className="w-6 h-6 animate-pulse" />
-                  </div>
-                  <div className="p-3 rounded-lg bg-muted">
-                    <p className="text-sm">Thinking...</p>
-                  </div>
+            {isLoading && (
+              <div className="flex items-start gap-3 justify-start">
+                <div className="p-2 bg-muted rounded-full">
+                  <Bot className="w-6 h-6 animate-pulse" />
                 </div>
-              )}
+                <div className="p-3 rounded-lg bg-muted">
+                  <p className="text-sm">Thinking...</p>
+                </div>
+              </div>
+            )}
           </div>
         </ScrollArea>
       </CardContent>
