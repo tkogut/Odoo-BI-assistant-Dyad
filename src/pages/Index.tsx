@@ -12,8 +12,8 @@ import { useLocalStorage } from "@/hooks/useLocalStorage";
 import ThemeToggle from "@/components/ThemeToggle";
 
 const Index = () => {
-  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8000");
-  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "");
+  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8001");
+  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "mockkey");
 
   return (
     <div className="min-h-screen bg-gray-50 py-8">

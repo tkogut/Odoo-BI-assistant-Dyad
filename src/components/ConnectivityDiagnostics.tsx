@@ -46,7 +46,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
 
   const runDiagnostics = async () => {
     if (!relayHost) {
-      showError("Please provide a Relay Host (include protocol, e.g. http://localhost:8000).");
+      showError("Please provide a Relay Host (include protocol, e.g. http://localhost:8001).");
       return;
     }
 
@@ -172,7 +172,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
             <Label htmlFor="relay-host">Relay Host</Label>
             <Input
               id="relay-host"
-              placeholder="http://127.0.0.1:8000"
+              placeholder="http://127.0.0.1:8001"
               value={relayHost}
               onChange={(e) => onRelayHostChange(e.target.value)}
             />
@@ -196,8 +196,8 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
           <Button
             variant="ghost"
             onClick={() => {
-              onRelayHostChange("http://localhost:8000");
-              onApiKeyChange("");
+              onRelayHostChange("http://localhost:8001");
+              onApiKeyChange("mockkey");
               setBasicResult(null);
               setPostResult(null);
             }}
