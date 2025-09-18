@@ -10,6 +10,7 @@ import AICustomQuery from "@/components/AICustomQuery";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 import ThemeToggle from "@/components/ThemeToggle";
+import RelayMockTester from "@/components/RelayMockTester";
 
 const Index = () => {
   const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8001");
@@ -53,6 +54,7 @@ const Index = () => {
               <AIChat relayHost={relayHost} apiKey={apiKey} />
               <AICustomQuery relayHost={relayHost} apiKey={apiKey} />
               <AIDashboardGenerator relayHost={relayHost} apiKey={apiKey} />
+              <RelayMockTester relayHost={relayHost} apiKey={apiKey} />
             </div>
           </div>
         </section>
