@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -13,9 +13,42 @@ interface Props {
   apiKey: string;
 }
 
+const statusColor = (status: string) => {
+  switch (status) {
+    case "connected":
+      return "bg-green-500";
+    case "connecting":
+      return "bg-yellow-500";
+    case "error":
+      return "bg-red-500";
+    default:
+      return "bg-gray-400";
+  }
+};
+
 export const AICustomQuery: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [input, setInput] = useState("");
-  const { status, messages, send, pushMessage } = useAIChat(relayHost, apiKey);
+  const { status, messages, send, pushMessage, connect, disconnect } = useAIChat(relayHost, apiKey);
+  const connectingToastRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Show toasts for status transitions. Keep a reference for the "connecting" toast to dismiss it later.
+    if (status === "connecting") {
+      connectingToastRef.current = showLoading("Connecting to relay...");
+    } else {
+      if (connectingToastRef.current) {
+        dismissToast(connectingToastRef.current);
+        connectingToastRef.current = null;
+      }
+      if (status === "connected") {
+        showSuccess("Connected to relay (WebSocket).");
+      } else if (status === "disconnected") {
+        showSuccess("Disconnected from relay.");
+      } else if (status === "error") {
+        showError("WebSocket connection error.");
+      }
+    }
+  }, [status]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -62,9 +95,30 @@ export const AICustomQuery: React.FC<Props> = ({ relayHost, apiKey }) => {
 
   return (
     <Card className="flex flex-col h-[420px]">
-      <CardHeader>
+      <CardHeader className="flex items-center justify-between">
         <CardTitle>AI Natural Query</CardTitle>
+
+        <div className="flex items-center space-x-3">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block w-3 h-3 rounded-full ${statusColor(status)}`} />
+            <span className="text-sm text-muted-foreground capitalize">{status}</span>
+          </div>
+
+          {status !== "connected" ? (
+            <Button
+              onClick={() => connect()}
+              disabled={!relayHost || status === "connecting"}
+            >
+              Connect
+            </Button>
+          ) : (
+            <Button variant="ghost" onClick={() => disconnect()}>
+              Disconnect
+            </Button>
+          )}
+        </div>
       </CardHeader>
+
       <CardContent className="flex-grow overflow-hidden">
         <div className="h-full pr-2 overflow-auto space-y-3">
           {messages.map((m) => (
@@ -72,6 +126,7 @@ export const AICustomQuery: React.FC<Props> = ({ relayHost, apiKey }) => {
           ))}
         </div>
       </CardContent>
+
       <CardFooter>
         <form onSubmit={handleSubmit} className="flex w-full items-center space-x-2">
           <Input
