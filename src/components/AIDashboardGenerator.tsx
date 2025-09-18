@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 import DynamicDashboard from "./DynamicDashboard";
+import { useRpcConfirm } from "@/components/rpc-confirm";
 
 interface Props {
   relayHost: string;
@@ -24,6 +25,7 @@ export const AIDashboardGenerator: React.FC<Props> = ({ relayHost, apiKey }) => 
   const [prompt, setPrompt] = useState("");
   const [config, setConfig] = useState<DashboardConfig | null>(null);
   const [running, setRunning] = useState(false);
+  const confirmRpc = useRpcConfirm();
 
   const generate = async () => {
     if (!relayHost) {
@@ -35,17 +37,28 @@ export const AIDashboardGenerator: React.FC<Props> = ({ relayHost, apiKey }) => 
       return;
     }
 
+    const payload = {
+      model: "ai.assistant",
+      method: "generate_dashboard",
+      args: [prompt],
+      kwargs: {},
+    };
+
+    try {
+      const ok = await confirmRpc(payload);
+      if (!ok) {
+        showError("Dashboard generation cancelled by user.");
+        return;
+      }
+    } catch {
+      showError("Unable to confirm dashboard generation.");
+      return;
+    }
+
     setRunning(true);
     const toastId = showLoading("Generating dashboard...");
     try {
       const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
-      const payload = {
-        model: "ai.assistant",
-        method: "generate_dashboard",
-        args: [prompt],
-        kwargs: {},
-      };
-
       const resp = await fetch(url, {
         method: "POST",
         headers: {

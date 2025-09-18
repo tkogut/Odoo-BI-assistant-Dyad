@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
+import { useRpcConfirm } from "@/components/rpc-confirm";
 
 interface Props {
   relayHost: string;
@@ -20,6 +21,8 @@ export const CustomQuery: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [kwargsText, setKwargsText] = useState('{}');
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<any>(null);
+
+  const confirmRpc = useRpcConfirm();
 
   const runQuery = async () => {
     if (!relayHost) {
@@ -42,6 +45,20 @@ export const CustomQuery: React.FC<Props> = ({ relayHost, apiKey }) => {
       return;
     }
 
+    const payload = { model, method, args, kwargs };
+
+    // Ask user to confirm the exact payload before sending
+    try {
+      const ok = await confirmRpc(payload);
+      if (!ok) {
+        showError("Query cancelled by user.");
+        return;
+      }
+    } catch {
+      showError("Unable to confirm query.");
+      return;
+    }
+
     setRunning(true);
     setResult(null);
     const toastId = showLoading("Executing custom query...");
@@ -50,8 +67,6 @@ export const CustomQuery: React.FC<Props> = ({ relayHost, apiKey }) => {
       const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const payload = { model, method, args, kwargs };
 
       const resp = await fetch(url, {
         method: "POST",

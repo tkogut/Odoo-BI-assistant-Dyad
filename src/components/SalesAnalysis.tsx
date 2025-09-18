@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
+import { useRpcConfirm } from "@/components/rpc-confirm";
 
 interface Props {
   relayHost: string;
@@ -24,12 +25,38 @@ export const SalesAnalysis: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [period, setPeriod] = useState<"month" | "year">("month");
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<SalesResult[]>([]);
+  const confirmRpc = useRpcConfirm();
 
   const analyze = async () => {
     if (!relayHost) {
       showError("Please enter a Relay Host (e.g. http://localhost:8000)");
       return;
     }
+
+    const payload = {
+      model: "sale.order",
+      method: "read_group",
+      args: [
+        [["state", "in", ["sale", "done"]]], // domain: confirmed sales orders
+        ["amount_total"], // fields to aggregate
+        [`date_order:${period}`] // group by
+      ],
+      kwargs: {
+        lazy: false // Important for read_group to return all results
+      },
+    };
+
+    try {
+      const ok = await confirmRpc(payload);
+      if (!ok) {
+        showError("Analysis cancelled by user.");
+        return;
+      }
+    } catch {
+      showError("Unable to confirm analysis.");
+      return;
+    }
+
     setRunning(true);
     setResults([]);
     const toastId = showLoading("Analyzing sales...");
@@ -38,19 +65,6 @@ export const SalesAnalysis: React.FC<Props> = ({ relayHost, apiKey }) => {
       const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 20000);
-
-      const payload = {
-        model: "sale.order",
-        method: "read_group",
-        args: [
-          [["state", "in", ["sale", "done"]]], // domain: confirmed sales orders
-          ["amount_total"], // fields to aggregate
-          [`date_order:${period}`] // group by
-        ],
-        kwargs: {
-          lazy: false // Important for read_group to return all results
-        },
-      };
 
       const resp = await fetch(url, {
         method: "POST",

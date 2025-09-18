@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
+import { useRpcConfirm } from "@/components/rpc-confirm";
 
 interface ConnectivityDiagnosticsProps {
   relayHost: string;
@@ -32,6 +33,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const [basicResult, setBasicResult] = useState<ResultBox | null>(null);
   const [postResult, setPostResult] = useState<ResultBox | null>(null);
   const [running, setRunning] = useState(false);
+  const confirmRpc = useRpcConfirm();
 
   const safePreview = async (r: Response): Promise<string> => {
     try {
@@ -86,6 +88,24 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
         args: [[]],
         kwargs: { fields: ["id"], limit: 1 },
       };
+
+      // Confirm with user before sending the POST payload
+      try {
+        const ok = await confirmRpc({ ...payload, _diagnostic: true });
+        if (!ok) {
+          setPostResult({ error: "User cancelled POST diagnostic check." });
+          dismissToast(toastId);
+          setRunning(false);
+          clearTimeout(timeoutId2);
+          return;
+        }
+      } catch {
+        setPostResult({ error: "Unable to confirm POST diagnostic check." });
+        dismissToast(toastId);
+        setRunning(false);
+        clearTimeout(timeoutId2);
+        return;
+      }
 
       let postBox: ResultBox = {};
       try {

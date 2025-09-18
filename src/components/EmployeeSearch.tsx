@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
+import { useRpcConfirm } from "@/components/rpc-confirm";
 
 interface Props {
   relayHost: string;
@@ -24,6 +25,7 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<Employee[]>([]);
+  const confirmRpc = useRpcConfirm();
 
   const searchEmployees = async () => {
     if (!relayHost) {
@@ -35,6 +37,27 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
       return;
     }
 
+    const payload = {
+      model: "hr.employee",
+      method: "search_read",
+      args: [[["name", "ilike", searchTerm]]],
+      kwargs: {
+        fields: ["name", "work_email", "work_phone", "department_id"],
+        limit: 10,
+      },
+    };
+
+    try {
+      const ok = await confirmRpc(payload);
+      if (!ok) {
+        showError("Search cancelled by user.");
+        return;
+      }
+    } catch {
+      showError("Unable to confirm search.");
+      return;
+    }
+
     setRunning(true);
     setResults([]);
     const toastId = showLoading("Searching for employees...");
@@ -43,16 +66,6 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
       const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const payload = {
-        model: "hr.employee",
-        method: "search_read",
-        args: [[["name", "ilike", searchTerm]]],
-        kwargs: {
-          fields: ["name", "work_email", "work_phone", "department_id"],
-          limit: 10,
-        },
-      };
 
       const resp = await fetch(url, {
         method: "POST",

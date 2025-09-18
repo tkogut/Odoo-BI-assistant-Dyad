@@ -8,6 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 import { cn } from "@/lib/utils";
 import { Bot, User } from "lucide-react";
+import { useRpcConfirm } from "@/components/rpc-confirm";
 
 interface Props {
   relayHost: string;
@@ -64,6 +65,7 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const confirmRpc = useRpcConfirm();
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -147,6 +149,22 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
         ],
         kwargs: {},
       };
+
+      // Ask user to confirm HTTP RPC payload before sending
+      try {
+        const ok = await confirmRpc(payload);
+        if (!ok) {
+          showError("AI query cancelled by user.");
+          setIsLoading(false);
+          dismissToast(toastId);
+          return;
+        }
+      } catch {
+        showError("Unable to confirm AI query.");
+        setIsLoading(false);
+        dismissToast(toastId);
+        return;
+      }
 
       const res = await postToRelay(url, payload, apiKey, 30000);
 
