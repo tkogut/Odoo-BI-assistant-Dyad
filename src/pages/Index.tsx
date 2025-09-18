@@ -1,4 +1,5 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import { MadeWithDyad } from "@/components/made-with-dyad";
 import ConnectivityDiagnostics from "@/components/ConnectivityDiagnostics";
 import { EmployeeSearch } from "@/components/EmployeeSearch";
@@ -21,7 +22,12 @@ const Index = () => {
             <h1 className="text-3xl font-bold">Odoo BI Assistant — Relay Diagnostics</h1>
             <p className="text-sm text-muted-foreground">Use the diagnostics panel to troubleshoot network/CORS/TLS issues.</p>
           </div>
-          <MadeWithDyad />
+          <div className="flex items-center gap-4">
+            <Link to="/settings" className="text-sm text-blue-600 hover:underline">
+              Settings
+            </Link>
+            <MadeWithDyad />
+          </div>
         </header>
 
         <section>
