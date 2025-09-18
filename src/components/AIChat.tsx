@@ -9,6 +9,7 @@ import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast
 import { cn } from "@/lib/utils";
 import { Bot, User } from "lucide-react";
 import { useRpcConfirm } from "@/components/rpc-confirm";
+import { useAIChat, type AIMessage } from "@/hooks/useAIChat";
 
 interface Props {
   relayHost: string;
@@ -60,6 +61,19 @@ async function postToRelay(url: string, payload: any, apiKey?: string, timeoutMs
   }
 }
 
+const statusColor = (status: string) => {
+  switch (status) {
+    case "connected":
+      return "bg-green-500";
+    case "connecting":
+      return "bg-yellow-500";
+    case "error":
+      return "bg-red-500";
+    default:
+      return "bg-gray-400";
+  }
+};
+
 export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -67,11 +81,35 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const confirmRpc = useRpcConfirm();
 
+  // Use the WebSocket helper hook for live connections
+  const { status, messages: wsMessages, connect, disconnect, send } = useAIChat(relayHost, apiKey);
+
+  // Keep track of which ws message ids we've already merged to avoid duplicates
+  const mergedWsIds = useRef<Set<number>>(new Set());
+
   useEffect(() => {
     if (scrollAreaRef.current) {
       scrollAreaRef.current.scrollTo({ top: scrollAreaRef.current.scrollHeight, behavior: "smooth" });
     }
   }, [messages]);
+
+  // Merge incoming websocket messages into the UI message list
+  useEffect(() => {
+    if (!wsMessages || wsMessages.length === 0) return;
+    setMessages((prev) => {
+      const existingIds = new Set(prev.map((m) => m.id));
+      const newOnes = wsMessages
+        .filter((wm) => !existingIds.has(wm.id) && !mergedWsIds.current.has(wm.id))
+        .map((wm) => ({
+          id: wm.id,
+          role: wm.role,
+          content: wm.content,
+        }));
+      newOnes.forEach((n) => mergedWsIds.current.add(n.id));
+      return newOnes.length ? [...prev, ...newOnes] : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsMessages]);
 
   // Simple helper to convert employee results into a readable summary string
   const formatEmployeeSummary = (results: any[]) => {
@@ -150,7 +188,7 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
         kwargs: {},
       };
 
-      // Ask user to confirm HTTP RPC payload before sending
+      // Ask user to confirm HTTP/WS RPC payload before sending
       try {
         const ok = await confirmRpc(payload);
         if (!ok) {
@@ -166,6 +204,15 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
         return;
       }
 
+      // If WebSocket connected, send over WS and rely on incoming messages to populate the reply
+      if (status === "connected" && send) {
+        await send(payload);
+        showSuccess("Sent via WebSocket; awaiting assistant reply.");
+        // The useAIChat hook will append incoming assistant messages when received.
+        return;
+      }
+
+      // Fallback to HTTP POST
       const res = await postToRelay(url, payload, apiKey, 30000);
 
       // If parsed JSON looks like an RPC response
@@ -230,9 +277,27 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
 
   return (
     <Card className="flex flex-col h-[500px]">
-      <CardHeader>
+      <CardHeader className="flex items-center justify-between">
         <CardTitle>AI Assistant</CardTitle>
+
+        <div className="flex items-center space-x-3">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block w-3 h-3 rounded-full ${statusColor(status)}`} />
+            <span className="text-sm text-muted-foreground capitalize">{status}</span>
+          </div>
+
+          {status !== "connected" ? (
+            <Button onClick={() => connect()} disabled={!relayHost || status === "connecting"}>
+              Connect
+            </Button>
+          ) : (
+            <Button variant="ghost" onClick={() => disconnect()}>
+              Disconnect
+            </Button>
+          )}
+        </div>
       </CardHeader>
+
       <CardContent className="flex-grow overflow-hidden">
         <ScrollArea className="h-full pr-4" ref={scrollAreaRef as any}>
           <div className="space-y-4">
@@ -298,3 +363,5 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
     </Card>
   );
 };
+
+export default AIChat;
