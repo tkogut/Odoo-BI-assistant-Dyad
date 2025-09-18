@@ -4,6 +4,7 @@ import ConnectivityDiagnostics from "@/components/ConnectivityDiagnostics";
 import { EmployeeSearch } from "@/components/EmployeeSearch";
 import { CustomQuery } from "@/components/CustomQuery";
 import { SalesAnalysis } from "@/components/SalesAnalysis";
+import { AIChat } from "@/components/AIChat";
 
 const Index = () => {
   const [relayHost, setRelayHost] = useState<string>("http://localhost:8000");
@@ -31,15 +32,14 @@ const Index = () => {
 
         <section>
           <h2 className="text-xl font-semibold mb-4">Interactive Tools</h2>
-          <div className="grid grid-cols-1 gap-6">
-            <div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="space-y-6">
               <EmployeeSearch relayHost={relayHost} apiKey={apiKey} />
-            </div>
-            <div>
               <CustomQuery relayHost={relayHost} apiKey={apiKey} />
+              <SalesAnalysis relayHost={relayHost} apiKey={apiKey} />
             </div>
             <div>
-              <SalesAnalysis relayHost={relayHost} apiKey={apiKey} />
+              <AIChat relayHost={relayHost} apiKey={apiKey} />
             </div>
           </div>
         </section>
