@@ -72,6 +72,48 @@ export const RelayMockTester: React.FC<Props> = ({ relayHost, apiKey }) => {
     }
   };
 
+  const testOptions = async () => {
+    const url = `${safeHost(relayHost)}/api/execute_method`;
+    pushLog("info", `Starting OPTIONS ${url} ...`);
+    const toastId = showLoading("Running OPTIONS /api/execute_method ...");
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+
+      // Request an OPTIONS directly to inspect returned Access-Control-* headers
+      const resp = await fetch(url, {
+        method: "OPTIONS",
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      const headers: Record<string, string> = {};
+      resp.headers.forEach((v, k) => {
+        headers[k] = v;
+      });
+
+      pushLog("info", `OPTIONS status ${resp.status} ${resp.statusText}`);
+      pushLog("info", `OPTIONS headers: ${JSON.stringify(headers).slice(0, 1000)}`);
+
+      if (resp.ok) {
+        showSuccess("OPTIONS responded; check headers for Access-Control-Allow-*");
+        pushLog("success", "OPTIONS OK");
+      } else {
+        showError(`OPTIONS returned ${resp.status}`);
+        pushLog("error", `OPTIONS returned ${resp.status} ${resp.statusText}`);
+      }
+
+      return { ok: resp.ok, status: resp.status, headers };
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      pushLog("error", `OPTIONS error: ${msg}`);
+      showError(msg);
+      return { ok: false, error: msg };
+    } finally {
+      dismissToast(toastId);
+    }
+  };
+
   const testPostExecute = async () => {
     const url = `${safeHost(relayHost)}/api/execute_method`;
     pushLog("info", `Starting POST ${url} ...`);
@@ -208,8 +250,7 @@ export const RelayMockTester: React.FC<Props> = ({ relayHost, apiKey }) => {
         };
 
         // Wrap resolve to finalize
-        const originalResolve = resolve;
-        // Do nothing — the resolve calls inside handlers will terminate the promise and we rely on effect cleanup to close socket
+        // Handlers call resolve directly and we rely on effect cleanup to close socket
       } catch (err: any) {
         const msg = err?.message || String(err);
         pushLog("error", `WebSocket setup error: ${msg}`);
@@ -294,12 +335,17 @@ export const RelayMockTester: React.FC<Props> = ({ relayHost, apiKey }) => {
   const runAll = async () => {
     setRunning(true);
     setLogs([]);
-    pushLog("info", "Starting full test flow: GET -> POST -> WS");
+    pushLog("info", "Starting full test flow: GET -> OPTIONS -> POST -> WS");
     const toastId = showLoading("Running relay mock test flow...");
     try {
       const g = await testGet();
       if (!g.ok) {
         pushLog("error", "GET failed — aborting further tests.");
+        return;
+      }
+      const o = await testOptions();
+      if (!o.ok) {
+        pushLog("error", "OPTIONS/preflight failed — aborting POST/WS tests.");
         return;
       }
       const p = await testPostExecute();
@@ -349,6 +395,9 @@ export const RelayMockTester: React.FC<Props> = ({ relayHost, apiKey }) => {
               <Button variant="ghost" onClick={async () => { setRunning(true); await testGet(); setRunning(false); }}>
                 GET
               </Button>
+              <Button variant="ghost" onClick={async () => { setRunning(true); await testOptions(); setRunning(false); }}>
+                OPTIONS
+              </Button>
               <Button variant="ghost" onClick={async () => { setRunning(true); await testPostExecute(); setRunning(false); }}>
                 POST
               </Button>
@@ -382,7 +431,7 @@ export const RelayMockTester: React.FC<Props> = ({ relayHost, apiKey }) => {
       </CardContent>
 
       <CardFooter>
-        <div className="text-sm text-muted-foreground">This runner executes simple checks against a relay mock (GET, POST, WS).</div>
+        <div className="text-sm text-muted-foreground">This runner executes simple checks against a relay mock (GET, OPTIONS, POST, WS).</div>
       </CardFooter>
     </Card>
   );
