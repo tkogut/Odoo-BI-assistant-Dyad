@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { useRpcConfirm } from "@/components/rpc-confirm";
 
@@ -63,31 +64,55 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   onApiKeyChange,
 }) => {
   const [getStatus, setGetStatus] = useState<ProbeStatus>("idle");
+  const [optionsRootStatus, setOptionsRootStatus] = useState<ProbeStatus>("idle");
   const [optionsStatus, setOptionsStatus] = useState<ProbeStatus>("idle");
   const [postStatus, setPostStatus] = useState<ProbeStatus>("idle");
 
   const [getResult, setGetResult] = useState<ResultBox | null>(null);
+  const [optionsRootResult, setOptionsRootResult] = useState<OptionsResult | null>(null);
   const [optionsResult, setOptionsResult] = useState<OptionsResult | null>(null);
   const [postResult, setPostResult] = useState<ResultBox | null>(null);
 
   const confirmRpc = useRpcConfirm();
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "unknown";
+  const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost:8080";
 
-  const buildGetCurl = (host: string) => `curl -i ${host.replace(/\/$/, "")}/`;
-  const buildOptionsCurl = (host: string) =>
-    `curl -i -X OPTIONS ${host.replace(/\/$/, "")}/api/execute_method \\
-  -H "Origin: ${origin}" \\
-  -H "Access-Control-Request-Method: POST" \\
-  -H "Access-Control-Request-Headers: X-API-Key,Content-Type"`;
-  const buildPostCurl = (host: string, key?: string) =>
-    `curl -i -X POST ${host.replace(/\/$/, "")}/api/execute_method \\
-  -H "Content-Type: application/json" \\
-  ${key ? `-H "X-API-Key: ${key}" \\` : ""} -d '${JSON.stringify(
-      { model: "res.partner", method: "search_read", args: [[]], kwargs: { fields: ["id"], limit: 1 } },
-      null,
-      2,
-    )}'`;
+  const normalizeHost = (host: string) => host.replace(/\/$/, "");
+
+  // Generate default cURL snippets (match the user's requested format)
+  const genOptionsRootCurl = (host: string, orig: string) =>
+    `bash\ncurl -i -X OPTIONS "${normalizeHost(host)}/" \\\n  -H "Origin: ${orig}" \\\n  -H "Access-Control-Request-Method: GET" \\\n  -H "Access-Control-Request-Headers: X-API-Key,Content-Type"`;
+
+  const genGetRootCurl = (host: string, orig: string, key?: string) =>
+    `bash\ncurl -i -X GET "${normalizeHost(host)}/" \\\n  -H "Origin: ${orig}" \\\n  -H "X-API-Key: ${key ?? ""}"`;
+
+  const genOptionsExecuteCurl = (host: string, orig: string) =>
+    `bash\ncurl -i -X OPTIONS "${normalizeHost(host)}/api/execute_method" \\\n  -H "Origin: ${orig}" \\\n  -H "Access-Control-Request-Method: POST" \\\n  -H "Access-Control-Request-Headers: X-API-Key,Content-Type"`;
+
+  const genPostExecuteCurl = (host: string, orig: string, key?: string) =>
+    `bash\ncurl -i -X POST "${normalizeHost(host)}/api/execute_method" \\\n  -H "Origin: ${orig}" \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: ${key ?? ""}" \\\n  -d '{"model":"res.partner","method":"search_read","args":[],"kwargs":{}}'`;
+
+  // Editable curl states and edited flags (so user edits are preserved)
+  const [optionsRootCurl, setOptionsRootCurl] = useState(() => genOptionsRootCurl(relayHost, origin));
+  const [optionsRootEdited, setOptionsRootEdited] = useState(false);
+
+  const [getRootCurl, setGetRootCurl] = useState(() => genGetRootCurl(relayHost, origin, apiKey));
+  const [getRootEdited, setGetRootEdited] = useState(false);
+
+  const [optionsExecuteCurl, setOptionsExecuteCurl] = useState(() => genOptionsExecuteCurl(relayHost, origin));
+  const [optionsExecuteEdited, setOptionsExecuteEdited] = useState(false);
+
+  const [postExecuteCurl, setPostExecuteCurl] = useState(() => genPostExecuteCurl(relayHost, origin, apiKey));
+  const [postExecuteEdited, setPostExecuteEdited] = useState(false);
+
+  // When relayHost/apiKey/origin change, refresh the default curl if the user hasn't edited that field
+  useEffect(() => {
+    if (!optionsRootEdited) setOptionsRootCurl(genOptionsRootCurl(relayHost, origin));
+    if (!getRootEdited) setGetRootCurl(genGetRootCurl(relayHost, origin, apiKey));
+    if (!optionsExecuteEdited) setOptionsExecuteCurl(genOptionsExecuteCurl(relayHost, origin));
+    if (!postExecuteEdited) setPostExecuteCurl(genPostExecuteCurl(relayHost, origin, apiKey));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [relayHost, apiKey, origin]);
 
   const copyToClipboard = async (text: string) => {
     try {
@@ -98,7 +123,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
-  // Basic GET probe
+  // Basic GET probe (root)
   const runGet = async () => {
     if (!relayHost) {
       showError("Please provide a Relay Host first.");
@@ -131,8 +156,6 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
       } catch (err: any) {
         clearTimeout(timeout);
         const msg = err?.message || String(err);
-        // Try to infer if server is reachable but CORS blocked: do a no-cors probe
-        // (we avoid heavy logic here; keep result concise)
         setGetResult({ error: msg });
         setGetStatus("error");
         showError(`GET failed: ${msg}`);
@@ -142,7 +165,68 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
-  // OPTIONS preflight probe
+  // OPTIONS preflight probe for root
+  const runOptionsRoot = async () => {
+    if (!relayHost) {
+      showError("Please provide a Relay Host first.");
+      return;
+    }
+    setOptionsRootStatus("running");
+    setOptionsRootResult(null);
+    const toastId = showLoading("Running OPTIONS (root) preflight...");
+    const url = `${normalizeHost(relayHost)}/`;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const resp = await fetch(url, {
+          method: "OPTIONS",
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        const headers: Record<string, string> = {};
+        resp.headers.forEach((v, k) => {
+          headers[k.toLowerCase()] = v;
+        });
+
+        const mismatches: string[] = [];
+        const acaOrigin = headers["access-control-allow-origin"];
+        if (!acaOrigin) mismatches.push("Missing Access-Control-Allow-Origin");
+        else if (acaOrigin !== "*" && origin && acaOrigin !== origin)
+          mismatches.push(`Access-Control-Allow-Origin does not match (${origin})`);
+
+        const allowedMethods = (headers["access-control-allow-methods"] || "").toUpperCase();
+        if (!allowedMethods) mismatches.push("Missing Access-Control-Allow-Methods");
+
+        const res: OptionsResult = {
+          ok: resp.ok,
+          status: resp.status,
+          headers,
+          mismatches,
+        };
+        setOptionsRootResult(res);
+
+        if (resp.ok && mismatches.length === 0) {
+          setOptionsRootStatus("success");
+          showSuccess("Root OPTIONS looks good");
+        } else {
+          setOptionsRootStatus("error");
+          showError("OPTIONS (root) returned issues; inspect headers");
+        }
+      } catch (err: any) {
+        clearTimeout(timeout);
+        const msg = err?.message || String(err);
+        setOptionsRootResult({ error: msg });
+        setOptionsRootStatus("error");
+        showError(`OPTIONS (root) failed: ${msg}`);
+      }
+    } finally {
+      dismissToast(toastId);
+    }
+  };
+
+  // OPTIONS preflight probe for /api/execute_method
   const runOptions = async () => {
     if (!relayHost) {
       showError("Please provide a Relay Host first.");
@@ -151,7 +235,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     setOptionsStatus("running");
     setOptionsResult(null);
     const toastId = showLoading("Running OPTIONS preflight...");
-    const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+    const url = `${normalizeHost(relayHost)}/api/execute_method`;
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -244,7 +328,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     setPostStatus("running");
     setPostResult(null);
     const toastId = showLoading("Running POST probe...");
-    const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+    const url = `${normalizeHost(relayHost)}/api/execute_method`;
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 12000);
@@ -289,6 +373,23 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
+  const resetOptionsRootCurl = () => {
+    setOptionsRootCurl(genOptionsRootCurl(relayHost, origin));
+    setOptionsRootEdited(false);
+  };
+  const resetGetRootCurl = () => {
+    setGetRootCurl(genGetRootCurl(relayHost, origin, apiKey));
+    setGetRootEdited(false);
+  };
+  const resetOptionsExecuteCurl = () => {
+    setOptionsExecuteCurl(genOptionsExecuteCurl(relayHost, origin));
+    setOptionsExecuteEdited(false);
+  };
+  const resetPostExecuteCurl = () => {
+    setPostExecuteCurl(genPostExecuteCurl(relayHost, origin, apiKey));
+    setPostExecuteEdited(false);
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -322,16 +423,59 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
           App origin: <span className="font-mono">{origin}</span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* GET probe card */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* OPTIONS root probe card (editable curl) */}
+          <div className="border rounded p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className={`w-3 h-3 rounded-full ${statusColor(optionsRootStatus)}`} />
+                <div className="font-medium">OPTIONS / (health check)</div>
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsRootCurl)}>
+                  Copy curl
+                </Button>
+                <Button size="sm" onClick={runOptionsRoot} disabled={optionsRootStatus === "running"}>
+                  {optionsRootStatus === "running" ? "Running..." : "Run OPTIONS"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="text-xs text-muted-foreground mb-2">Preflight-style OPTIONS to the root (useful to verify CORS on health endpoints).</div>
+
+            <div className="mb-2">
+              <Textarea
+                value={optionsRootCurl}
+                onChange={(e) => {
+                  setOptionsRootCurl(e.target.value);
+                  setOptionsRootEdited(true);
+                }}
+                className="text-xs font-mono h-28"
+              />
+              <div className="flex gap-2 mt-2">
+                <Button size="sm" variant="ghost" onClick={resetOptionsRootCurl}>
+                  Reset curl
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsRootCurl)}>
+                  Copy (edited)
+                </Button>
+              </div>
+            </div>
+
+            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
+              {optionsRootResult ? JSON.stringify(optionsRootResult, null, 2) : "No result yet."}
+            </pre>
+          </div>
+
+          {/* GET root probe card (editable curl) */}
           <div className="border rounded p-3">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <div className={`w-3 h-3 rounded-full ${statusColor(getStatus)}`} />
-                <div className="font-medium">GET /</div>
+                <div className="font-medium">GET / (health check)</div>
               </div>
               <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(buildGetCurl(relayHost))}>
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(getRootCurl)}>
                   Copy curl
                 </Button>
                 <Button size="sm" onClick={runGet} disabled={getStatus === "running"}>
@@ -340,8 +484,25 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
               </div>
             </div>
 
-            <div className="text-xs text-muted-foreground mb-2">
-              Quick reachability check of the relay root.
+            <div className="text-xs text-muted-foreground mb-2">Simple GET health check of the relay root (include Origin/X-API-Key to reproduce browser headers).</div>
+
+            <div className="mb-2">
+              <Textarea
+                value={getRootCurl}
+                onChange={(e) => {
+                  setGetRootCurl(e.target.value);
+                  setGetRootEdited(true);
+                }}
+                className="text-xs font-mono h-28"
+              />
+              <div className="flex gap-2 mt-2">
+                <Button size="sm" variant="ghost" onClick={resetGetRootCurl}>
+                  Reset curl
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(getRootCurl)}>
+                  Copy (edited)
+                </Button>
+              </div>
             </div>
 
             <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
@@ -349,7 +510,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
             </pre>
           </div>
 
-          {/* OPTIONS probe card */}
+          {/* OPTIONS /api/execute_method probe card (editable curl) */}
           <div className="border rounded p-3">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
@@ -357,7 +518,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
                 <div className="font-medium">OPTIONS /api/execute_method</div>
               </div>
               <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(buildOptionsCurl(relayHost))}>
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsExecuteCurl)}>
                   Copy curl
                 </Button>
                 <Button size="sm" onClick={runOptions} disabled={optionsStatus === "running"}>
@@ -370,12 +531,31 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
               Validate preflight headers required by browsers (Access-Control-Allow-*).
             </div>
 
+            <div className="mb-2">
+              <Textarea
+                value={optionsExecuteCurl}
+                onChange={(e) => {
+                  setOptionsExecuteCurl(e.target.value);
+                  setOptionsExecuteEdited(true);
+                }}
+                className="text-xs font-mono h-28"
+              />
+              <div className="flex gap-2 mt-2">
+                <Button size="sm" variant="ghost" onClick={resetOptionsExecuteCurl}>
+                  Reset curl
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsExecuteCurl)}>
+                  Copy (edited)
+                </Button>
+              </div>
+            </div>
+
             <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
               {optionsResult ? JSON.stringify(optionsResult, null, 2) : "No result yet."}
             </pre>
           </div>
 
-          {/* POST probe card */}
+          {/* POST /api/execute_method probe card (editable curl) */}
           <div className="border rounded p-3">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
@@ -383,7 +563,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
                 <div className="font-medium">POST /api/execute_method</div>
               </div>
               <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(buildPostCurl(relayHost, apiKey))}>
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(postExecuteCurl)}>
                   Copy curl
                 </Button>
                 <Button size="sm" onClick={runPost} disabled={postStatus === "running"}>
@@ -394,6 +574,25 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
 
             <div className="text-xs text-muted-foreground mb-2">
               Send a simple POST RPC to check preflight, headers, and response payload.
+            </div>
+
+            <div className="mb-2">
+              <Textarea
+                value={postExecuteCurl}
+                onChange={(e) => {
+                  setPostExecuteCurl(e.target.value);
+                  setPostExecuteEdited(true);
+                }}
+                className="text-xs font-mono h-28"
+              />
+              <div className="flex gap-2 mt-2">
+                <Button size="sm" variant="ghost" onClick={resetPostExecuteCurl}>
+                  Reset curl
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(postExecuteCurl)}>
+                  Copy (edited)
+                </Button>
+              </div>
             </div>
 
             <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
@@ -412,7 +611,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
               If your app is HTTPS and the relay uses HTTP, the browser will block requests (mixed-content) — use HTTPS for the relay.
             </li>
             <li>
-              Use "Copy curl" to reproduce requests from a terminal and verify headers from the relay side.
+              Use the editable cURL block to tweak and reproduce requests from a terminal and verify headers on the relay side.
             </li>
           </ul>
         </div>
