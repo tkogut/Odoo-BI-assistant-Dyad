@@ -2,12 +2,11 @@
 
 import React, { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { showError, showSuccess, showLoading, dismissToast } from "@/utils/toast";
 import { useRpcConfirm } from "@/components/rpc-confirm";
+import ProbeCard from "@/components/diagnostics/ProbeCard";
 
 interface ConnectivityDiagnosticsProps {
   relayHost: string;
@@ -34,19 +33,6 @@ type OptionsResult = {
 };
 
 type ProbeStatus = "idle" | "running" | "success" | "error";
-
-const statusColor = (s: ProbeStatus) => {
-  switch (s) {
-    case "running":
-      return "bg-yellow-400";
-    case "success":
-      return "bg-green-500";
-    case "error":
-      return "bg-red-500";
-    default:
-      return "bg-gray-300";
-  }
-};
 
 const safePreview = async (r: Response): Promise<string> => {
   try {
@@ -76,10 +62,9 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const confirmRpc = useRpcConfirm();
 
   const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost:8080";
-
   const normalizeHost = (host: string) => host.replace(/\/$/, "");
 
-  // Generate default cURL snippets (match the user's requested format)
+  // default curl generators
   const genOptionsRootCurl = (host: string, orig: string) =>
     `bash\ncurl -i -X OPTIONS "${normalizeHost(host)}/" \\\n  -H "Origin: ${orig}" \\\n  -H "Access-Control-Request-Method: GET" \\\n  -H "Access-Control-Request-Headers: X-API-Key,Content-Type"`;
 
@@ -92,7 +77,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const genPostExecuteCurl = (host: string, orig: string, key?: string) =>
     `bash\ncurl -i -X POST "${normalizeHost(host)}/api/execute_method" \\\n  -H "Origin: ${orig}" \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: ${key ?? ""}" \\\n  -d '{"model":"res.partner","method":"search_read","args":[],"kwargs":{}}'`;
 
-  // Editable curl states and edited flags (so user edits are preserved)
+  // editable curl states
   const [optionsRootCurl, setOptionsRootCurl] = useState(() => genOptionsRootCurl(relayHost, origin));
   const [optionsRootEdited, setOptionsRootEdited] = useState(false);
 
@@ -105,7 +90,6 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const [postExecuteCurl, setPostExecuteCurl] = useState(() => genPostExecuteCurl(relayHost, origin, apiKey));
   const [postExecuteEdited, setPostExecuteEdited] = useState(false);
 
-  // When relayHost/apiKey/origin change, refresh the default curl if the user hasn't edited that field
   useEffect(() => {
     if (!optionsRootEdited) setOptionsRootCurl(genOptionsRootCurl(relayHost, origin));
     if (!getRootEdited) setGetRootCurl(genGetRootCurl(relayHost, origin, apiKey));
@@ -118,12 +102,12 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     try {
       await navigator.clipboard.writeText(text);
       showSuccess("Copied curl to clipboard");
-    } catch (err: any) {
+    } catch {
       showError("Unable to copy to clipboard");
     }
   };
 
-  // Basic GET probe (root)
+  // probe implementations (unchanged logic, now modularized)
   const runGet = async () => {
     if (!relayHost) {
       showError("Please provide a Relay Host first.");
@@ -165,7 +149,6 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
-  // OPTIONS preflight probe for root
   const runOptionsRoot = async () => {
     if (!relayHost) {
       showError("Please provide a Relay Host first.");
@@ -226,7 +209,6 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
-  // OPTIONS preflight probe for /api/execute_method
   const runOptions = async () => {
     if (!relayHost) {
       showError("Please provide a Relay Host first.");
@@ -299,7 +281,6 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
-  // POST probe to /api/execute_method
   const runPost = async () => {
     if (!relayHost) {
       showError("Please provide a Relay Host first.");
@@ -313,7 +294,6 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
       kwargs: { fields: ["id"], limit: 1 },
     };
 
-    // Confirm with user before sending the POST payload
     try {
       const ok = await confirmRpc({ ...payload, _diagnostic: true });
       if (!ok) {
@@ -373,6 +353,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
+  // reset helpers
   const resetOptionsRootCurl = () => {
     setOptionsRootCurl(genOptionsRootCurl(relayHost, origin));
     setOptionsRootEdited(false);
@@ -424,181 +405,78 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {/* OPTIONS root probe card (editable curl) */}
-          <div className="border rounded p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className={`w-3 h-3 rounded-full ${statusColor(optionsRootStatus)}`} />
-                <div className="font-medium">OPTIONS / (health check)</div>
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsRootCurl)}>
-                  Copy curl
-                </Button>
-                <Button size="sm" onClick={runOptionsRoot} disabled={optionsRootStatus === "running"}>
-                  {optionsRootStatus === "running" ? "Running..." : "Run OPTIONS"}
-                </Button>
-              </div>
-            </div>
+          <ProbeCard
+            title="OPTIONS / (health check)"
+            description="Preflight-style OPTIONS to the root (useful to verify CORS on health endpoints)."
+            status={optionsRootStatus}
+            curlValue={optionsRootCurl}
+            onCurlChange={(v) => {
+              setOptionsRootCurl(v);
+              setOptionsRootEdited(true);
+            }}
+            onResetCurl={resetOptionsRootCurl}
+            onCopyCurl={() => copyToClipboard(optionsRootCurl)}
+            onRun={runOptionsRoot}
+            runLabel="Run OPTIONS"
+            runDisabled={optionsRootStatus === "running"}
+            resultJson={optionsRootResult}
+            curlEdited={optionsRootEdited}
+          />
 
-            <div className="text-xs text-muted-foreground mb-2">Preflight-style OPTIONS to the root (useful to verify CORS on health endpoints).</div>
+          <ProbeCard
+            title="GET / (health check)"
+            description="Simple GET health check of the relay root (include Origin/X-API-Key to reproduce browser headers)."
+            status={getStatus}
+            curlValue={getRootCurl}
+            onCurlChange={(v) => {
+              setGetRootCurl(v);
+              setGetRootEdited(true);
+            }}
+            onResetCurl={resetGetRootCurl}
+            onCopyCurl={() => copyToClipboard(getRootCurl)}
+            onRun={runGet}
+            runLabel="Run GET"
+            runDisabled={getStatus === "running"}
+            resultPreview={getResult ? JSON.stringify(getResult, null, 2) : undefined}
+            curlEdited={getRootEdited}
+          />
 
-            <div className="mb-2">
-              <Textarea
-                value={optionsRootCurl}
-                onChange={(e) => {
-                  setOptionsRootCurl(e.target.value);
-                  setOptionsRootEdited(true);
-                }}
-                className="text-xs font-mono h-28"
-              />
-              <div className="flex gap-2 mt-2">
-                <Button size="sm" variant="ghost" onClick={resetOptionsRootCurl}>
-                  Reset curl
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsRootCurl)}>
-                  Copy (edited)
-                </Button>
-              </div>
-            </div>
+          <ProbeCard
+            title="OPTIONS /api/execute_method"
+            description="Validate preflight headers required by browsers (Access-Control-Allow-*)."
+            status={optionsStatus}
+            curlValue={optionsExecuteCurl}
+            onCurlChange={(v) => {
+              setOptionsExecuteCurl(v);
+              setOptionsExecuteEdited(true);
+            }}
+            onResetCurl={resetOptionsExecuteCurl}
+            onCopyCurl={() => copyToClipboard(optionsExecuteCurl)}
+            onRun={runOptions}
+            runLabel="Run OPTIONS"
+            runDisabled={optionsStatus === "running"}
+            resultJson={optionsResult}
+            curlEdited={optionsExecuteEdited}
+          />
 
-            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
-              {optionsRootResult ? JSON.stringify(optionsRootResult, null, 2) : "No result yet."}
-            </pre>
-          </div>
-
-          {/* GET root probe card (editable curl) */}
-          <div className="border rounded p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className={`w-3 h-3 rounded-full ${statusColor(getStatus)}`} />
-                <div className="font-medium">GET / (health check)</div>
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(getRootCurl)}>
-                  Copy curl
-                </Button>
-                <Button size="sm" onClick={runGet} disabled={getStatus === "running"}>
-                  {getStatus === "running" ? "Running..." : "Run GET"}
-                </Button>
-              </div>
-            </div>
-
-            <div className="text-xs text-muted-foreground mb-2">Simple GET health check of the relay root (include Origin/X-API-Key to reproduce browser headers).</div>
-
-            <div className="mb-2">
-              <Textarea
-                value={getRootCurl}
-                onChange={(e) => {
-                  setGetRootCurl(e.target.value);
-                  setGetRootEdited(true);
-                }}
-                className="text-xs font-mono h-28"
-              />
-              <div className="flex gap-2 mt-2">
-                <Button size="sm" variant="ghost" onClick={resetGetRootCurl}>
-                  Reset curl
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(getRootCurl)}>
-                  Copy (edited)
-                </Button>
-              </div>
-            </div>
-
-            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
-              {getResult ? JSON.stringify(getResult, null, 2) : "No result yet."}
-            </pre>
-          </div>
-
-          {/* OPTIONS /api/execute_method probe card (editable curl) */}
-          <div className="border rounded p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className={`w-3 h-3 rounded-full ${statusColor(optionsStatus)}`} />
-                <div className="font-medium">OPTIONS /api/execute_method</div>
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsExecuteCurl)}>
-                  Copy curl
-                </Button>
-                <Button size="sm" onClick={runOptions} disabled={optionsStatus === "running"}>
-                  {optionsStatus === "running" ? "Running..." : "Run OPTIONS"}
-                </Button>
-              </div>
-            </div>
-
-            <div className="text-xs text-muted-foreground mb-2">
-              Validate preflight headers required by browsers (Access-Control-Allow-*).
-            </div>
-
-            <div className="mb-2">
-              <Textarea
-                value={optionsExecuteCurl}
-                onChange={(e) => {
-                  setOptionsExecuteCurl(e.target.value);
-                  setOptionsExecuteEdited(true);
-                }}
-                className="text-xs font-mono h-28"
-              />
-              <div className="flex gap-2 mt-2">
-                <Button size="sm" variant="ghost" onClick={resetOptionsExecuteCurl}>
-                  Reset curl
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(optionsExecuteCurl)}>
-                  Copy (edited)
-                </Button>
-              </div>
-            </div>
-
-            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
-              {optionsResult ? JSON.stringify(optionsResult, null, 2) : "No result yet."}
-            </pre>
-          </div>
-
-          {/* POST /api/execute_method probe card (editable curl) */}
-          <div className="border rounded p-3">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className={`w-3 h-3 rounded-full ${statusColor(postStatus)}`} />
-                <div className="font-medium">POST /api/execute_method</div>
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(postExecuteCurl)}>
-                  Copy curl
-                </Button>
-                <Button size="sm" onClick={runPost} disabled={postStatus === "running"}>
-                  {postStatus === "running" ? "Running..." : "Run POST"}
-                </Button>
-              </div>
-            </div>
-
-            <div className="text-xs text-muted-foreground mb-2">
-              Send a simple POST RPC to check preflight, headers, and response payload.
-            </div>
-
-            <div className="mb-2">
-              <Textarea
-                value={postExecuteCurl}
-                onChange={(e) => {
-                  setPostExecuteCurl(e.target.value);
-                  setPostExecuteEdited(true);
-                }}
-                className="text-xs font-mono h-28"
-              />
-              <div className="flex gap-2 mt-2">
-                <Button size="sm" variant="ghost" onClick={resetPostExecuteCurl}>
-                  Reset curl
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(postExecuteCurl)}>
-                  Copy (edited)
-                </Button>
-              </div>
-            </div>
-
-            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
-              {postResult ? JSON.stringify(postResult, null, 2) : "No result yet."}
-            </pre>
-          </div>
+          <ProbeCard
+            title="POST /api/execute_method"
+            description="Send a simple POST RPC to check preflight, headers, and response payload."
+            status={postStatus}
+            curlValue={postExecuteCurl}
+            onCurlChange={(v) => {
+              setPostExecuteCurl(v);
+              setPostExecuteEdited(true);
+            }}
+            onResetCurl={resetPostExecuteCurl}
+            onCopyCurl={() => copyToClipboard(postExecuteCurl)}
+            onRun={runPost}
+            runLabel="Run POST"
+            runDisabled={postStatus === "running"}
+            resultPreview={postResult ? postResult.bodyPreview : undefined}
+            resultJson={postResult ? postResult.parsedJson ?? postResult : undefined}
+            curlEdited={postExecuteEdited}
+          />
         </div>
 
         <div>
