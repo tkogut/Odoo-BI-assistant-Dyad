@@ -24,90 +24,230 @@ type ResultBox = {
   error?: string;
 };
 
+type OptionsResult = {
+  ok?: boolean;
+  status?: number;
+  headers?: Record<string, string>;
+  error?: string;
+  mismatches?: string[];
+};
+
+type ProbeStatus = "idle" | "running" | "success" | "error";
+
+const statusColor = (s: ProbeStatus) => {
+  switch (s) {
+    case "running":
+      return "bg-yellow-400";
+    case "success":
+      return "bg-green-500";
+    case "error":
+      return "bg-red-500";
+    default:
+      return "bg-gray-300";
+  }
+};
+
+const safePreview = async (r: Response): Promise<string> => {
+  try {
+    const text = await r.text();
+    return text.slice(0, 1000);
+  } catch {
+    return "";
+  }
+};
+
 export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = ({
   relayHost,
   apiKey,
   onRelayHostChange,
   onApiKeyChange,
 }) => {
-  const [basicResult, setBasicResult] = useState<ResultBox | null>(null);
+  const [getStatus, setGetStatus] = useState<ProbeStatus>("idle");
+  const [optionsStatus, setOptionsStatus] = useState<ProbeStatus>("idle");
+  const [postStatus, setPostStatus] = useState<ProbeStatus>("idle");
+
+  const [getResult, setGetResult] = useState<ResultBox | null>(null);
+  const [optionsResult, setOptionsResult] = useState<OptionsResult | null>(null);
   const [postResult, setPostResult] = useState<ResultBox | null>(null);
-  const [running, setRunning] = useState(false);
+
   const confirmRpc = useRpcConfirm();
 
-  const safePreview = async (r: Response): Promise<string> => {
+  const origin = typeof window !== "undefined" ? window.location.origin : "unknown";
+
+  const buildGetCurl = (host: string) => `curl -i ${host.replace(/\/$/, "")}/`;
+  const buildOptionsCurl = (host: string) =>
+    `curl -i -X OPTIONS ${host.replace(/\/$/, "")}/api/execute_method \\
+  -H "Origin: ${origin}" \\
+  -H "Access-Control-Request-Method: POST" \\
+  -H "Access-Control-Request-Headers: X-API-Key,Content-Type"`;
+  const buildPostCurl = (host: string, key?: string) =>
+    `curl -i -X POST ${host.replace(/\/$/, "")}/api/execute_method \\
+  -H "Content-Type: application/json" \\
+  ${key ? `-H "X-API-Key: ${key}" \\` : ""} -d '${JSON.stringify(
+      { model: "res.partner", method: "search_read", args: [[]], kwargs: { fields: ["id"], limit: 1 } },
+      null,
+      2,
+    )}'`;
+
+  const copyToClipboard = async (text: string) => {
     try {
-      const text = await r.text();
-      return text.slice(0, 1000);
-    } catch {
-      return "";
+      await navigator.clipboard.writeText(text);
+      showSuccess("Copied curl to clipboard");
+    } catch (err: any) {
+      showError("Unable to copy to clipboard");
     }
   };
 
-  const runDiagnostics = async () => {
+  // Basic GET probe
+  const runGet = async () => {
     if (!relayHost) {
-      showError("Please provide a Relay Host (include protocol, e.g. http://localhost:8001).");
+      showError("Please provide a Relay Host first.");
+      return;
+    }
+    setGetStatus("running");
+    setGetResult(null);
+    const toastId = showLoading("Running GET probe...");
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const resp = await fetch(relayHost, { method: "GET", signal: controller.signal });
+        clearTimeout(timeout);
+        const preview = await safePreview(resp);
+        const box: ResultBox = {
+          ok: resp.ok,
+          status: resp.status,
+          statusText: resp.statusText,
+          bodyPreview: preview,
+        };
+        setGetResult(box);
+        if (resp.ok) {
+          setGetStatus("success");
+          showSuccess("GET succeeded");
+        } else {
+          setGetStatus("error");
+          showError(`GET returned ${resp.status}`);
+        }
+      } catch (err: any) {
+        clearTimeout(timeout);
+        const msg = err?.message || String(err);
+        // Try to infer if server is reachable but CORS blocked: do a no-cors probe
+        // (we avoid heavy logic here; keep result concise)
+        setGetResult({ error: msg });
+        setGetStatus("error");
+        showError(`GET failed: ${msg}`);
+      }
+    } finally {
+      dismissToast(toastId);
+    }
+  };
+
+  // OPTIONS preflight probe
+  const runOptions = async () => {
+    if (!relayHost) {
+      showError("Please provide a Relay Host first.");
+      return;
+    }
+    setOptionsStatus("running");
+    setOptionsResult(null);
+    const toastId = showLoading("Running OPTIONS preflight...");
+    const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const resp = await fetch(url, {
+          method: "OPTIONS",
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        const headers: Record<string, string> = {};
+        resp.headers.forEach((v, k) => {
+          headers[k.toLowerCase()] = v;
+        });
+
+        const mismatches: string[] = [];
+        const acaOrigin = headers["access-control-allow-origin"];
+        if (!acaOrigin) mismatches.push("Missing Access-Control-Allow-Origin");
+        else if (acaOrigin !== "*" && origin && acaOrigin !== origin)
+          mismatches.push(`Access-Control-Allow-Origin does not match (${origin})`);
+
+        const allowedMethods = (headers["access-control-allow-methods"] || "").toUpperCase();
+        if (!allowedMethods) mismatches.push("Missing Access-Control-Allow-Methods");
+        else {
+          if (!allowedMethods.includes("POST")) mismatches.push("POST not allowed");
+          if (!allowedMethods.includes("OPTIONS")) mismatches.push("OPTIONS not allowed");
+          if (!allowedMethods.includes("GET")) mismatches.push("GET not allowed");
+        }
+
+        const allowedHeaders = (headers["access-control-allow-headers"] || "").toLowerCase();
+        if (!allowedHeaders) mismatches.push("Missing Access-Control-Allow-Headers");
+        else {
+          if (!allowedHeaders.includes("content-type")) mismatches.push("Missing Content-Type in allowed headers");
+          if (!allowedHeaders.includes("x-api-key")) mismatches.push("Missing X-API-Key in allowed headers");
+        }
+
+        const res: OptionsResult = {
+          ok: resp.ok,
+          status: resp.status,
+          headers,
+          mismatches,
+        };
+        setOptionsResult(res);
+
+        if (resp.ok && mismatches.length === 0) {
+          setOptionsStatus("success");
+          showSuccess("OPTIONS looks good");
+        } else {
+          setOptionsStatus("error");
+          showError("OPTIONS returned issues; inspect headers");
+        }
+      } catch (err: any) {
+        clearTimeout(timeout);
+        const msg = err?.message || String(err);
+        setOptionsResult({ error: msg });
+        setOptionsStatus("error");
+        showError(`OPTIONS failed: ${msg}`);
+      }
+    } finally {
+      dismissToast(toastId);
+    }
+  };
+
+  // POST probe to /api/execute_method
+  const runPost = async () => {
+    if (!relayHost) {
+      showError("Please provide a Relay Host first.");
       return;
     }
 
-    setBasicResult(null);
-    setPostResult(null);
-    setRunning(true);
-    const toastId = showLoading("Running connectivity diagnostics...");
+    const payload = {
+      model: "res.partner",
+      method: "search_read",
+      args: [[]],
+      kwargs: { fields: ["id"], limit: 1 },
+    };
 
-    // Basic GET to the base host to check reachability / mixed-content
+    // Confirm with user before sending the POST payload
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      let basic: ResultBox = {};
-      try {
-        const resp = await fetch(relayHost, { method: "GET", signal: controller.signal });
-        basic.ok = resp.ok;
-        basic.status = resp.status;
-        basic.statusText = resp.statusText;
-        basic.bodyPreview = await safePreview(resp);
-      } catch (err: any) {
-        basic.error = err?.message || String(err);
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      setBasicResult(basic);
-    } catch (err) {
-      setBasicResult({ error: (err as Error).message || String(err) });
-    }
-
-    // Real POST to /api/execute_method with X-API-Key header to surface preflight/CORS/TLS issues
-    try {
-      const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
-      const controller2 = new AbortController();
-      const timeoutId2 = setTimeout(() => controller2.abort(), 15000);
-
-      const payload = {
-        model: "res.partner",
-        method: "search_read",
-        args: [[]],
-        kwargs: { fields: ["id"], limit: 1 },
-      };
-
-      // Confirm with user before sending the POST payload
-      try {
-        const ok = await confirmRpc({ ...payload, _diagnostic: true });
-        if (!ok) {
-          setPostResult({ error: "User cancelled POST diagnostic check." });
-          dismissToast(toastId);
-          setRunning(false);
-          clearTimeout(timeoutId2);
-          return;
-        }
-      } catch {
-        setPostResult({ error: "Unable to confirm POST diagnostic check." });
-        dismissToast(toastId);
-        setRunning(false);
-        clearTimeout(timeoutId2);
+      const ok = await confirmRpc({ ...payload, _diagnostic: true });
+      if (!ok) {
+        showError("POST probe cancelled by user.");
         return;
       }
+    } catch {
+      showError("Unable to confirm POST probe.");
+      return;
+    }
 
-      let postBox: ResultBox = {};
+    setPostStatus("running");
+    setPostResult(null);
+    const toastId = showLoading("Running POST probe...");
+    const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
       try {
         const resp = await fetch(url, {
           method: "POST",
@@ -116,48 +256,36 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
             ...(apiKey ? { "X-API-Key": apiKey } : {}),
           },
           body: JSON.stringify(payload),
-          signal: controller2.signal,
+          signal: controller.signal,
         });
+        clearTimeout(timeout);
 
-        postBox.status = resp.status;
-        postBox.statusText = resp.statusText;
-        postBox.ok = resp.ok;
-
-        // try parse JSON (if any)
+        const box: ResultBox = { status: resp.status, statusText: resp.statusText, ok: resp.ok };
         try {
           const parsed = await resp.json();
-          postBox.parsedJson = parsed;
-          postBox.bodyPreview = JSON.stringify(parsed).slice(0, 2000);
+          box.parsedJson = parsed;
+          box.bodyPreview = JSON.stringify(parsed).slice(0, 2000);
         } catch {
-          postBox.bodyPreview = await safePreview(resp);
+          box.bodyPreview = await safePreview(resp);
         }
+        setPostResult(box);
 
-        if (!resp.ok && !postBox.error) {
-          postBox.error =
-            (postBox.parsedJson && (postBox.parsedJson.error || postBox.parsedJson.message)) ||
-            `HTTP ${resp.status} ${resp.statusText}`;
+        if (resp.ok) {
+          setPostStatus("success");
+          showSuccess("POST succeeded (HTTP OK).");
+        } else {
+          setPostStatus("error");
+          showError(`POST returned ${resp.status}`);
         }
       } catch (err: any) {
-        // Network-level error (e.g. Failed to fetch / CORS / TLS)
-        postBox.error = err?.message || String(err);
-      } finally {
-        clearTimeout(timeoutId2);
+        clearTimeout(timeout);
+        const msg = err?.message || String(err);
+        setPostResult({ error: msg });
+        setPostStatus("error");
+        showError(`POST failed: ${msg}`);
       }
-
-      setPostResult(postBox);
-      if (postBox.ok) {
-        showSuccess("POST /api/execute_method succeeded (or returned HTTP OK).");
-      } else if (postBox.error) {
-        showError(`POST error: ${postBox.error}`);
-      } else {
-        showError("POST returned non-OK status.");
-      }
-    } catch (err) {
-      setPostResult({ error: (err as Error).message || String(err) });
-      showError((err as Error).message || "Unknown error during diagnostics.");
     } finally {
       dismissToast(toastId);
-      setRunning(false);
     }
   };
 
@@ -166,6 +294,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
       <CardHeader>
         <CardTitle>Connectivity Diagnostics</CardTitle>
       </CardHeader>
+
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -182,72 +311,108 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
             <Label htmlFor="api-key">API Key (X-API-Key)</Label>
             <Input
               id="api-key"
-              placeholder="Paste API Key (optional for diagnostics)"
+              placeholder="Optional API key"
               value={apiKey}
               onChange={(e) => onApiKeyChange(e.target.value)}
             />
           </div>
         </div>
 
-        {/* New: display current frontend origin to help CORS debugging */}
         <div className="text-sm text-muted-foreground">
-          Your app origin: <span className="font-mono">{typeof window !== "undefined" ? window.location.origin : "unknown"}</span>
+          App origin: <span className="font-mono">{origin}</span>
         </div>
 
-        <div className="flex gap-2">
-          <Button onClick={runDiagnostics} disabled={running}>
-            {running ? "Testing..." : "Run Diagnostics"}
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => {
-              onRelayHostChange("http://localhost:8001");
-              onApiKeyChange("mockkey");
-              setBasicResult(null);
-              setPostResult(null);
-            }}
-          >
-            Reset
-          </Button>
-        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* GET probe card */}
+          <div className="border rounded p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className={`w-3 h-3 rounded-full ${statusColor(getStatus)}`} />
+                <div className="font-medium">GET /</div>
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(buildGetCurl(relayHost))}>
+                  Copy curl
+                </Button>
+                <Button size="sm" onClick={runGet} disabled={getStatus === "running"}>
+                  {getStatus === "running" ? "Running..." : "Run GET"}
+                </Button>
+              </div>
+            </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Basic GET Result</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <pre className="bg-muted p-3 rounded text-sm overflow-auto h-48">
-                {JSON.stringify(basicResult, null, 2)}
-              </pre>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">POST /api/execute_method Result</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <pre className="bg-muted p-3 rounded text-sm overflow-auto h-48">
-                {JSON.stringify(postResult, null, 2)}
-              </pre>
-            </CardContent>
-          </Card>
+            <div className="text-xs text-muted-foreground mb-2">
+              Quick reachability check of the relay root.
+            </div>
+
+            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
+              {getResult ? JSON.stringify(getResult, null, 2) : "No result yet."}
+            </pre>
+          </div>
+
+          {/* OPTIONS probe card */}
+          <div className="border rounded p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className={`w-3 h-3 rounded-full ${statusColor(optionsStatus)}`} />
+                <div className="font-medium">OPTIONS /api/execute_method</div>
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(buildOptionsCurl(relayHost))}>
+                  Copy curl
+                </Button>
+                <Button size="sm" onClick={runOptions} disabled={optionsStatus === "running"}>
+                  {optionsStatus === "running" ? "Running..." : "Run OPTIONS"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="text-xs text-muted-foreground mb-2">
+              Validate preflight headers required by browsers (Access-Control-Allow-*).
+            </div>
+
+            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
+              {optionsResult ? JSON.stringify(optionsResult, null, 2) : "No result yet."}
+            </pre>
+          </div>
+
+          {/* POST probe card */}
+          <div className="border rounded p-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className={`w-3 h-3 rounded-full ${statusColor(postStatus)}`} />
+                <div className="font-medium">POST /api/execute_method</div>
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => copyToClipboard(buildPostCurl(relayHost, apiKey))}>
+                  Copy curl
+                </Button>
+                <Button size="sm" onClick={runPost} disabled={postStatus === "running"}>
+                  {postStatus === "running" ? "Running..." : "Run POST"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="text-xs text-muted-foreground mb-2">
+              Send a simple POST RPC to check preflight, headers, and response payload.
+            </div>
+
+            <pre className="bg-muted p-2 rounded text-xs h-28 overflow-auto">
+              {postResult ? JSON.stringify(postResult, null, 2) : "No result yet."}
+            </pre>
+          </div>
         </div>
 
         <div>
-          <h4 className="font-medium">Troubleshooting tips</h4>
+          <h4 className="font-medium">Tips</h4>
           <ul className="list-disc list-inside text-sm text-muted-foreground">
             <li>
-              If you see "Failed to fetch" or a network TypeError: the server is unreachable (DNS/port) or the browser blocked the request.
+              If GET fails but the server is reachable from other tools, the browser may be blocking requests due to CORS: run OPTIONS and inspect Access-Control-Allow-* headers.
             </li>
             <li>
-              If you see CORS errors in the browser console, update the relay to return Access-Control-Allow-Origin for your app origin (see the origin displayed above).
+              If your app is HTTPS and the relay uses HTTP, the browser will block requests (mixed-content) — use HTTPS for the relay.
             </li>
             <li>
-              If your app is HTTPS and the relay is HTTP, the browser will block the request (mixed-content). Use HTTPS for the relay or run the app over HTTP.
-            </li>
-            <li>
-              If the POST returns an error JSON, check the relay logs and ensure the API key header is named X-API-Key (adjust if your relay expects another header).
+              Use "Copy curl" to reproduce requests from a terminal and verify headers from the relay side.
             </li>
           </ul>
         </div>
