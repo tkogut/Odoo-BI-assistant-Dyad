@@ -189,6 +189,11 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
           </div>
         </div>
 
+        {/* New: display current frontend origin to help CORS debugging */}
+        <div className="text-sm text-muted-foreground">
+          Your app origin: <span className="font-mono">{typeof window !== "undefined" ? window.location.origin : "unknown"}</span>
+        </div>
+
         <div className="flex gap-2">
           <Button onClick={runDiagnostics} disabled={running}>
             {running ? "Testing..." : "Run Diagnostics"}
@@ -236,7 +241,7 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
               If you see "Failed to fetch" or a network TypeError: the server is unreachable (DNS/port) or the browser blocked the request.
             </li>
             <li>
-              If you see CORS errors in the browser console, update the relay to return Access-Control-Allow-Origin for your app origin.
+              If you see CORS errors in the browser console, update the relay to return Access-Control-Allow-Origin for your app origin (see the origin displayed above).
             </li>
             <li>
               If your app is HTTPS and the relay is HTTP, the browser will block the request (mixed-content). Use HTTPS for the relay or run the app over HTTP.
