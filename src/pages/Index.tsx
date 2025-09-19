@@ -8,8 +8,8 @@ import RelayMockTester from "@/components/RelayMockTester";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 
 const Index: React.FC = () => {
-  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8001");
-  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "mockkey");
+  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8000");
+  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "super_rooster");
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 flex flex-col">

@@ -8,7 +8,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - RELAY_API_KEY=mockkey
+      - RELAY_API_KEY=super_rooster
       # FRONTEND_ORIGIN is a comma-separated list used by main.py to allow CORS origins
       - FRONTEND_ORIGIN=http://localhost:80,http://localhost:8000,http://localhost:32100
 
@@ -18,12 +18,12 @@ services:
       dockerfile: frontend/Dockerfile
       args:
         # Build-time value embedded in the static build so client code knows which relay to call.
-        VITE_RELAY_HOST: "http://localhost:8001"
+        VITE_RELAY_HOST: "http://localhost:8000"
     ports:
       # Expose the built site on host port 8000 mapped to nginx:80
       - "8000:80"
     environment:
       # This runtime env is optional — the important part is the build-arg above.
-      - VITE_RELAY_HOST=http://localhost:8001
+      - VITE_RELAY_HOST=http://localhost:8000
     depends_on:
       - relay

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Relay Mock")
 
-RELAY_API_KEY = os.getenv('RELAY_API_KEY', 'mockkey')
+RELAY_API_KEY = os.getenv('RELAY_API_KEY', 'super_rooster')
 
 # FRONTEND_ORIGIN can be a comma-separated list of allowed frontend origins.
 # Default includes common dev ports plus the one reported by your browser.
