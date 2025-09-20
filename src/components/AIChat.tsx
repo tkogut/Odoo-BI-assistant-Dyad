@@ -1,4 +1,3 @@
-RPC interpreter into chat flow with safe fallback to heuristics; validate and forward RPC payloads to relay.">
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
@@ -9,9 +8,9 @@ import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast
 import { useRpcConfirm } from "@/components/rpc-confirm";
 import { useAIChat } from "@/hooks/useAIChat";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
-import MessageList, { } from "@/components/ai-chat/MessageList";
+import MessageList from "@/components/ai-chat/MessageList";
 import MessageInput from "@/components/ai-chat/MessageInput";
-import MessageBubble, { ChatMessage } from "@/components/ai-chat/MessageBubble";
+import type { ChatMessage } from "@/components/ai-chat/MessageBubble";
 import {
   postToRelay,
   postSearchEmployee,
@@ -28,7 +27,7 @@ interface Props {
   relayReachable?: boolean;
 }
 
-export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) => {
+const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
