@@ -2,7 +2,7 @@
 
 import React, { useEffect } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import MessageBubble, { ChatMessage } from "./MessageBubble.tsx";
+import MessageBubble, { ChatMessage } from "@/components/ai-chat/MessageBubble";
 import { Bot } from "lucide-react";
 
 interface Props {
