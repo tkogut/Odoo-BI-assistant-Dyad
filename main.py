@@ -10,7 +10,12 @@ except Exception:
 
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
+
+# Import local backend helpers
+from backend import observability as observability  # simple metrics helpers
+from backend.relay_api import get_memory_manager  # memory manager stub
 
 app = FastAPI(title="Relay Mock")
 
@@ -67,6 +72,10 @@ class ExecuteMethodRequest(BaseModel):
     kwargs: Optional[Dict[str, Any]] = {}
 
 
+# Instantiate or access shared memory manager (stub)
+_memory = get_memory_manager()
+
+
 @app.post('/api/execute_method')
 async def execute_method(payload: ExecuteMethodRequest, x_api_key: Optional[str] = Header(None)):
     """Mock execute method endpoint. Requires X-API-Key header matching RELAY_API_KEY."""
@@ -78,6 +87,13 @@ async def execute_method(payload: ExecuteMethodRequest, x_api_key: Optional[str]
         raise HTTPException(status_code=401, detail="Unauthorized")
     if x_api_key != RELAY_API_KEY and x_api_key not in API_KEYS:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # record a metric for observability
+    try:
+        observability.increment_api_calls()
+    except Exception:
+        # metrics must not break the main flow
+        pass
 
     # Return a predictable mock result
     # Quota enforcement: if a key has quota_per_day set, enforce it
@@ -96,6 +112,14 @@ async def execute_method(payload: ExecuteMethodRequest, x_api_key: Optional[str]
             raise HTTPException(status_code=429, detail='Daily quota exceeded')
     # increment usage
     API_KEYS[key]['usage'][today] = current_usage + 1
+
+    # Example use of the memory manager stub: keep a tiny usage counter per key
+    try:
+        mm_key = f"usage_count:{key}"
+        prev = _memory.get(mm_key) or 0
+        _memory.set(mm_key, prev + 1)
+    except Exception:
+        pass
 
     result = [{
         "model": payload.model,
@@ -129,6 +153,12 @@ async def ai_chat_ws(websocket: WebSocket):
     if not api_key:
         # headers supports .get
         api_key = websocket.headers.get('x-api-key')
+
+    # record websocket connection metric
+    try:
+        observability.increment_ws_connections()
+    except Exception:
+        pass
 
     # Accept if query param matches or header matches the configured key
     allowed_keys = {RELAY_API_KEY, 'mockkey'}
@@ -198,6 +228,17 @@ async def admin_delete_key(api_key: str, x_api_key: Optional[str] = Header(None)
 @app.get('/')
 async def root_health():
     return {"status": "ok"}
+
+
+# Expose a simple /metrics endpoint for observability
+@app.get('/metrics')
+async def metrics_endpoint():
+    try:
+        text = observability.get_metrics_text()
+        return PlainTextResponse(content=text, media_type="text/plain; version=0.0.4")
+    except Exception:
+        # Don't fail overall if metrics generation has an issue
+        return PlainTextResponse(content="relay_metrics_error 1\n", media_type="text/plain")
 
 
 if __name__ == '__main__':
