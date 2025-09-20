@@ -27,6 +27,75 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [results, setResults] = useState<Employee[]>([]);
   const confirmRpc = useRpcConfirm();
 
+  const trySearchEmployeeEndpoint = async (name: string, limit = 10) => {
+    const url = `${relayHost.replace(/\/$/, "")}/api/search_employee`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "X-API-Key": apiKey } : {}),
+        },
+        body: JSON.stringify({ name, limit }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      const json = await resp.json().catch(() => null);
+      if (resp.ok && json && json.success && Array.isArray(json.employees)) {
+        return { ok: true, employees: json.employees };
+      }
+      return { ok: false, parsed: json, status: resp.status, statusText: resp.statusText };
+    } catch (err: any) {
+      clearTimeout(timeout);
+      return { ok: false, error: err?.message || String(err) };
+    }
+  };
+
+  const tryExecuteMethodFallback = async (term: string) => {
+    // Reuse the older execute_method approach
+    const payload = {
+      model: "hr.employee",
+      method: "search_read",
+      args: [[["name", "ilike", term]]],
+      kwargs: {
+        fields: ["name", "work_email", "work_phone", "department_id"],
+        limit: 10,
+      },
+    };
+
+    const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "X-API-Key": apiKey } : {}),
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      const json = await resp.json().catch(() => null);
+      if (resp.ok && json && json.success) {
+        return { ok: true, employees: json.result || [] };
+      }
+      // Some relays may return arrays directly
+      if (resp.ok && Array.isArray(json)) {
+        return { ok: true, employees: json };
+      }
+      return { ok: false, parsed: json, status: resp.status, statusText: resp.statusText };
+    } catch (err: any) {
+      clearTimeout(timeout);
+      return { ok: false, error: err?.message || String(err) };
+    }
+  };
+
   const searchEmployees = async () => {
     if (!relayHost) {
       showError("Please enter a Relay Host (e.g. http://localhost:8000)");
@@ -37,18 +106,10 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
       return;
     }
 
-    const payload = {
-      model: "hr.employee",
-      method: "search_read",
-      args: [[["name", "ilike", searchTerm]]],
-      kwargs: {
-        fields: ["name", "work_email", "work_phone", "department_id"],
-        limit: 10,
-      },
-    };
-
+    // Confirm the intended action with the user (keeps consistent UX with other probes)
     try {
-      const ok = await confirmRpc(payload);
+      const previewPayload = { endpoint: "/api/search_employee (preferred)", body: { name: searchTerm, limit: 10 } };
+      const ok = await confirmRpc(previewPayload);
       if (!ok) {
         showError("Search cancelled by user.");
         return;
@@ -63,38 +124,31 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
     const toastId = showLoading("Searching for employees...");
 
     try {
-      const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { "X-API-Key": apiKey } : {}),
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-
-      const json = await resp.json();
-
-      if (resp.ok && json.success) {
-        setResults(json.result);
-        showSuccess(`Found ${json.result.length} employee(s).`);
-      } else {
-        const errorMessage = json.error || json.message || `HTTP ${resp.status} ${resp.statusText}`;
-        showError(`Search failed: ${errorMessage}`);
+      // First try the dedicated endpoint your relay exposes
+      const primary = await trySearchEmployeeEndpoint(searchTerm, 20);
+      if (primary.ok) {
+        setResults(primary.employees);
+        showSuccess(`Found ${primary.employees.length} employee(s) via /api/search_employee.`);
+        return;
       }
+
+      // If primary failed (404, not implemented, error), fall back to execute_method
+      const fallback = await tryExecuteMethodFallback(searchTerm);
+      if (fallback.ok) {
+        setResults(fallback.employees);
+        showSuccess(`Found ${fallback.employees.length} employee(s) via execute_method fallback.`);
+        return;
+      }
+
+      // Both attempts failed — show helpful error from whichever returned a message
+      const errMsg =
+        (primary && (primary.error || JSON.stringify(primary.parsed || primary))) ||
+        (fallback && (fallback.error || JSON.stringify(fallback.parsed || fallback))) ||
+        "Unknown error";
+      showError(`Search failed: ${String(errMsg).slice(0, 400)}`);
     } catch (err: any) {
       const errorMessage = err?.message || String(err);
-      if (errorMessage.toLowerCase().includes("failed to fetch")) {
-        showError("Network Error: Failed to fetch. Check Relay Host URL, server status, and CORS settings.");
-      } else {
-        showError(errorMessage);
-      }
+      showError(errorMessage);
     } finally {
       dismissToast(toastId);
       setRunning(false);
@@ -112,10 +166,10 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
             <Label htmlFor="employee-search">Employee Name</Label>
             <Input
               id="employee-search"
-              placeholder="e.g. John Doe"
+              placeholder="e.g. Kogut"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && searchEmployees()}
+              onKeyDown={(e) => e.key === "Enter" && searchEmployees()}
             />
           </div>
           <div className="self-end">
@@ -133,7 +187,7 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
                 <li key={employee.id} className="p-2 border rounded">
                   <p className="font-semibold">{employee.name}</p>
                   <p className="text-sm text-muted-foreground">
-                    {employee.department_id ? employee.department_id[1] : 'No Department'}
+                    {employee.department_id ? employee.department_id[1] : "No Department"}
                   </p>
                   <p className="text-sm">{employee.work_email}</p>
                   <p className="text-sm">{employee.work_phone}</p>
@@ -141,12 +195,12 @@ export const EmployeeSearch: React.FC<Props> = ({ relayHost, apiKey }) => {
               ))}
             </ul>
           ) : (
-            <p className="text-sm text-muted-foreground mt-2">
-              No results to display.
-            </p>
+            <p className="text-sm text-muted-foreground mt-2">No results to display.</p>
           )}
         </div>
       </CardContent>
     </Card>
   );
 };
+
+export default EmployeeSearch;
