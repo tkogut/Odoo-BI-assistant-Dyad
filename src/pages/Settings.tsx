@@ -11,7 +11,8 @@ import { useRpcConfirm } from "@/components/rpc-confirm";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 import ThemeToggle from "@/components/ThemeToggle";
 
-const DEFAULT_RELAY = "http://localhost:8000";
+// Prefer VITE_RELAY_HOST provided at build-time (via Docker build-arg or Vite), otherwise fallback.
+const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "http://localhost:8001";
 
 type RelayConfig = {
   id: string;
@@ -78,6 +79,8 @@ const Settings: React.FC = () => {
     setApiKey("");
     showSuccess("Settings reset to defaults.");
   };
+
+  // ... (rest of the file remains unchanged) ...
 
   const onTestConnection = async () => {
     if (!localRelay) {
