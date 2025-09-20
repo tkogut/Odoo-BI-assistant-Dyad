@@ -4,7 +4,7 @@ import { MadeWithDyad } from "@/components/made-with-dyad";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 import ThemeToggle from "@/components/ThemeToggle";
 import AIChat from "@/components/AIChat";
-import ConnectivityDiagnostics from "@/components/ConnectivityDiagnostics";
+import RelayMockTester from "@/components/RelayMockTester";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 
 const Index: React.FC = () => {
@@ -18,7 +18,7 @@ const Index: React.FC = () => {
           <div>
             <h1 className="text-2xl md:text-3xl font-semibold">Odoo BI Assistant</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Minimal dashboard: AI Assistant, connection diagnostics, and AI dashboard generator.
+              Minimal dashboard: AI Assistant, connection test, and AI dashboard generator.
             </p>
           </div>
 
@@ -38,12 +38,7 @@ const Index: React.FC = () => {
               </div>
 
               <div className="flex flex-col gap-6">
-                <ConnectivityDiagnostics
-                  relayHost={relayHost}
-                  apiKey={apiKey}
-                  onRelayHostChange={setRelayHost}
-                  onApiKeyChange={setApiKey}
-                />
+                <RelayMockTester relayHost={relayHost} apiKey={apiKey} />
                 <AIDashboardGenerator relayHost={relayHost} apiKey={apiKey} />
               </div>
             </div>
