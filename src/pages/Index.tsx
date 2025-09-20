@@ -6,17 +6,54 @@ import { MadeWithDyad } from "@/components/made-with-dyad";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 import ThemeToggle from "@/components/ThemeToggle";
 import AIChat from "@/components/AIChat";
-import RelayMockTester from "@/components/RelayMockTester";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
+import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 
-// Prefer build-time VITE_RELAY_HOST if provided; otherwise default to http://localhost:8000.
 const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "http://localhost:8000";
-// Prefer build-time VITE_RELAY_API_KEY if provided; otherwise default to "super_rooster".
 const DEFAULT_API_KEY = (import.meta.env.VITE_RELAY_API_KEY as string) ?? "super_rooster";
 
 const Index: React.FC = () => {
   const [relayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
   const [apiKey] = useLocalStorage<string>("apiKey", DEFAULT_API_KEY);
+
+  const runConnectionTest = async () => {
+    if (!relayHost) {
+      showError("No Relay Host configured. Open Settings to configure a Relay Host.");
+      return;
+    }
+
+    const toastId = showLoading("Running basic connection test...");
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+
+      let resp: Response | null = null;
+      try {
+        resp = await fetch(relayHost, { method: "GET", signal: controller.signal });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        const msg = err?.message || String(err);
+        showError(`Connection failed: ${msg}`);
+        return;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (resp) {
+        if (resp.ok) {
+          showSuccess(`Relay reachable (HTTP ${resp.status}).`);
+        } else {
+          showError(`Relay responded: HTTP ${resp.status} ${resp.statusText}`);
+        }
+      } else {
+        showError("No response from relay.");
+      }
+    } catch (err: any) {
+      showError(err?.message || String(err));
+    } finally {
+      dismissToast(toastId);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 flex flex-col">
@@ -25,12 +62,18 @@ const Index: React.FC = () => {
           <div>
             <h1 className="text-2xl md:text-3xl font-semibold">Odoo BI Assistant</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Minimal dashboard: AI Assistant, connection test, and AI dashboard generator.
+              AI Assistant and dashboard builder — quick connection test available.
             </p>
           </div>
 
           <div className="flex items-center gap-4">
             <ThemeToggle />
+            <button
+              onClick={runConnectionTest}
+              className="text-sm bg-primary text-primary-foreground px-3 py-1 rounded-md hover:opacity-90"
+            >
+              Connection Test
+            </button>
             <Link to="/settings" className="text-sm text-blue-600 hover:underline">
               Settings
             </Link>
@@ -44,8 +87,7 @@ const Index: React.FC = () => {
                 <AIChat relayHost={relayHost} apiKey={apiKey} />
               </div>
 
-              <div className="flex flex-col gap-6">
-                <RelayMockTester relayHost={relayHost} apiKey={apiKey} />
+              <div className="w-full">
                 <AIDashboardGenerator relayHost={relayHost} apiKey={apiKey} />
               </div>
             </div>
