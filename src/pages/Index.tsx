@@ -1,3 +1,5 @@
+"use client";
+
 import React from "react";
 import { Link } from "react-router-dom";
 import { MadeWithDyad } from "@/components/made-with-dyad";
@@ -13,8 +15,8 @@ const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "http://loc
 const DEFAULT_API_KEY = (import.meta.env.VITE_RELAY_API_KEY as string) ?? "super_rooster";
 
 const Index: React.FC = () => {
-  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
-  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", DEFAULT_API_KEY);
+  const [relayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
+  const [apiKey] = useLocalStorage<string>("apiKey", DEFAULT_API_KEY);
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 flex flex-col">
