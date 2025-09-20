@@ -7,9 +7,13 @@ import AIChat from "@/components/AIChat";
 import RelayMockTester from "@/components/RelayMockTester";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 
+// Prefer build-time VITE_RELAY_HOST if provided; otherwise default to empty (no hard-coded :8001).
+const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "";
+const DEFAULT_API_KEY = (import.meta.env.VITE_RELAY_API_KEY as string) ?? "";
+
 const Index: React.FC = () => {
-  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", "http://localhost:8001");
-  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "super_rooster");
+  const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
+  const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", DEFAULT_API_KEY);
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 flex flex-col">
