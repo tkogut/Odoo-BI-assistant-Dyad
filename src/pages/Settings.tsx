@@ -90,11 +90,86 @@ const Settings: React.FC = () => {
     const testId = Date.now().toString();
     const when = new Date().toISOString();
 
+    const recordTest = (entry: ConnectionTest) => {
+      setTests((prev) => [entry, ...(prev || [])].slice(0, 50));
+    };
+
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
 
-      const resp = await fetch(localRelay, { method: "GET", signal: controller.signal });
+      // Try a simple GET to the configured host root
+      let resp;
+      try {
+        resp = await fetch(localRelay, { method: "GET", signal: controller.signal });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        // network-level failure: try an automatic fallback to port 8001
+        const errMsg = err?.message || String(err);
+        setTestingResult({ error: errMsg });
+
+        const entry: ConnectionTest = {
+          id: testId,
+          when,
+          type: "GET",
+          error: errMsg,
+        };
+        recordTest(entry);
+
+        // Attempt fallback to port 8001 if the original host looks like localhost or contains a port
+        try {
+          const alt = buildAlternativeHost(localRelay, "8001");
+          if (alt && alt !== localRelay) {
+            const altController = new AbortController();
+            const altTimeout = setTimeout(() => altController.abort(), 8000);
+            try {
+              const altResp = await fetch(alt, { method: "GET", signal: altController.signal });
+              clearTimeout(altTimeout);
+              if (altResp.ok) {
+                // apply the detected working host (both local input and persisted)
+                setLocalRelay(alt);
+                setRelayHost(alt);
+                setTestingResult({ ok: true, status: altResp.status, note: `Switched to ${alt}` });
+                const altEntry: ConnectionTest = {
+                  id: Date.now().toString(),
+                  when: new Date().toISOString(),
+                  type: "GET",
+                  ok: altResp.ok,
+                  status: altResp.status,
+                  statusText: altResp.statusText,
+                  preview: await safeTextPreview(altResp),
+                };
+                recordTest(altEntry);
+                showSuccess(`Relay reachable at ${alt}; applied to settings.`);
+                return;
+              } else {
+                const preview = await safeTextPreview(altResp);
+                const altEntry: ConnectionTest = {
+                  id: Date.now().toString(),
+                  when: new Date().toISOString(),
+                  type: "GET",
+                  ok: altResp.ok,
+                  status: altResp.status,
+                  statusText: altResp.statusText,
+                  preview,
+                };
+                recordTest(altEntry);
+                showError(`Fallback to ${alt} returned ${altResp.status}`);
+              }
+            } catch {
+              // ignore fallback errors — fall through to final error handling
+            }
+          }
+        } catch {
+          // ignore fallback construction errors
+        }
+
+        showError(errMsg || "Connection test failed.");
+        return;
+      } finally {
+        // keep timeout cleared later after successful resp flow
+      }
+
       clearTimeout(timeout);
 
       let parsed = null;
@@ -102,7 +177,7 @@ const Settings: React.FC = () => {
         const text = await resp.text();
         parsed = text ? JSON.parse(text) : null;
       } catch {
-        // ignore JSON parse
+        parsed = null;
       }
 
       const result = {
@@ -123,11 +198,60 @@ const Settings: React.FC = () => {
         statusText: resp.statusText,
         preview: parsed ?? null,
       };
-      setTests((prev) => [entry, ...(prev || [])].slice(0, 50));
+      recordTest(entry);
 
       if (resp.ok) {
         showSuccess("Relay reachable (basic GET succeeded).");
       } else {
+        // If GET returned 404 (common when pointing at a static server), attempt auto-fallback to port 8001
+        if (resp.status === 404) {
+          // build and probe an alternative host using port 8001
+          try {
+            const alt = buildAlternativeHost(localRelay, "8001");
+            if (alt && alt !== localRelay) {
+              const altController = new AbortController();
+              const altTimeout = setTimeout(() => altController.abort(), 8000);
+              try {
+                const altResp = await fetch(alt, { method: "GET", signal: altController.signal });
+                clearTimeout(altTimeout);
+                let altParsed = null;
+                try {
+                  const t = await altResp.text();
+                  altParsed = t ? JSON.parse(t) : null;
+                } catch {
+                  altParsed = null;
+                }
+
+                const altEntry: ConnectionTest = {
+                  id: Date.now().toString(),
+                  when: new Date().toISOString(),
+                  type: "GET",
+                  ok: altResp.ok,
+                  status: altResp.status,
+                  statusText: altResp.statusText,
+                  preview: altParsed ?? null,
+                };
+                recordTest(altEntry);
+
+                if (altResp.ok) {
+                  // apply the detected working host (both local input and persisted)
+                  setLocalRelay(alt);
+                  setRelayHost(alt);
+                  setTestingResult({ ok: true, status: altResp.status, note: `Switched to ${alt}` });
+                  showSuccess(`Relay reachable at ${alt}; applied to settings.`);
+                } else {
+                  showError(`GET returned ${resp.status} (${resp.statusText}) and fallback ${alt} returned ${altResp.status}`);
+                }
+                return;
+              } catch (err: any) {
+                clearTimeout(altTimeout);
+                // fallback attempt failed — continue to notify user of original 404
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
         showError(`Basic GET returned ${resp.status}`);
       }
     } catch (err: any) {
@@ -174,6 +298,38 @@ const Settings: React.FC = () => {
   const clearHistory = () => {
     setTests([]);
     showSuccess("Cleared connection test history.");
+  };
+
+  // Helpers
+  const buildAlternativeHost = (host: string, port = "8001") => {
+    try {
+      const url = new URL(host);
+      // If the host already uses the desired port, return same
+      if (url.port === port) return host;
+      url.port = port;
+      // ensure no trailing slash for consistency with earlier code
+      return url.toString().replace(/\/$/, "");
+    } catch {
+      // Fallback naive replacement: replace :<digits> with :port, or append :port
+      try {
+        if (host.match(/:\d+$/)) {
+          return host.replace(/:\d+$/, `:${port}`);
+        }
+        // if host ends with slash, strip it
+        return host.replace(/\/$/, "") + `:${port}`;
+      } catch {
+        return host;
+      }
+    }
+  };
+
+  const safeTextPreview = async (r: Response) => {
+    try {
+      const t = await r.text();
+      return t.slice(0, 1000);
+    } catch {
+      return "";
+    }
   };
 
   return (
