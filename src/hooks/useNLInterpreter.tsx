@@ -50,7 +50,8 @@ function extractNameFromText(text: string): string | null {
   if (m && m[1]) return m[1].trim();
 
   // fallback: single capitalized token (e.g. "Kogut") or Last-name-like token
-  const tokenRe = /\b([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż-']{2,})\b/;
+  // Escape '-' inside the character class to avoid creating an unintended range.
+  const tokenRe = /\b([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż'\-]{2,})\b/;
   const t = text.match(tokenRe);
   if (t && t[1]) return t[1];
 
@@ -65,7 +66,7 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
   // Employee search heuristics
   if (
     /\b(employee|staff|colleague|people|person|employee search|find employee|who works|who is)\b/.test(lower) ||
-    /\b(search for|find|look up)\b/.test(lower) && /[A-ZĄĆĘŁŃÓŚŹŻ]/.test(cleaned)
+    (/\b(search for|find|look up)\b/.test(lower) && /[A-ZĄĆĘŁŃÓŚŹŻ]/.test(cleaned))
   ) {
     const name = extractNameFromText(cleaned) ?? cleaned;
     return {
