@@ -7,9 +7,10 @@ import AIChat from "@/components/AIChat";
 import RelayMockTester from "@/components/RelayMockTester";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 
-// Prefer build-time VITE_RELAY_HOST if provided; otherwise default to empty (no hard-coded :8001).
-const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "";
-const DEFAULT_API_KEY = (import.meta.env.VITE_RELAY_API_KEY as string) ?? "";
+// Prefer build-time VITE_RELAY_HOST if provided; otherwise default to http://localhost:8000.
+const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "http://localhost:8000";
+// Prefer build-time VITE_RELAY_API_KEY if provided; otherwise default to "super_rooster".
+const DEFAULT_API_KEY = (import.meta.env.VITE_RELAY_API_KEY as string) ?? "super_rooster";
 
 const Index: React.FC = () => {
   const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
