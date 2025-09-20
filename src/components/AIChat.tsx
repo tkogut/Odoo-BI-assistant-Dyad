@@ -15,6 +15,8 @@ import { useLocalStorage } from "@/hooks/useLocalStorage";
 interface Props {
   relayHost: string;
   apiKey: string;
+  // New optional prop: when true, indicate the relay is reachable via HTTP (connection test)
+  relayReachable?: boolean;
 }
 
 interface Message {
@@ -75,7 +77,7 @@ const statusColor = (status: string) => {
   }
 };
 
-export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
+export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -84,6 +86,9 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
 
   // Use the WebSocket helper hook for live connections
   const { status, messages: wsMessages, connect, disconnect, send } = useAIChat(relayHost, apiKey);
+
+  // Compute display status: prefer actual WS status, otherwise treat HTTP reachability as "connected" for the lamp.
+  const displayStatus = status === "connected" ? "connected" : relayReachable ? "connected" : status;
 
   // Keep track of which ws message ids we've already merged to avoid duplicates
   const mergedWsIds = useRef<Set<number>>(new Set());
@@ -369,8 +374,8 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
 
         <div className="flex items-center space-x-3">
           <div className="flex items-center gap-2">
-            <span className={`inline-block w-3 h-3 rounded-full ${statusColor(status)}`} />
-            <span className="text-sm text-muted-foreground capitalize">{status}</span>
+            <span className={`inline-block w-3 h-3 rounded-full ${statusColor(displayStatus)}`} />
+            <span className="text-sm text-muted-foreground capitalize">{displayStatus}</span>
           </div>
 
           {status !== "connected" ? (

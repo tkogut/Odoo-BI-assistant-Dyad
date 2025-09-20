@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { MadeWithDyad } from "@/components/made-with-dyad";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
@@ -15,6 +15,9 @@ const DEFAULT_API_KEY = (import.meta.env.VITE_RELAY_API_KEY as string) ?? "super
 const Index: React.FC = () => {
   const [relayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
   const [apiKey] = useLocalStorage<string>("apiKey", DEFAULT_API_KEY);
+
+  // New: track HTTP reachability so the UI lamp can show 'Connected' on successful GET
+  const [relayReachable, setRelayReachable] = useState<boolean>(false);
 
   const runConnectionTest = async () => {
     if (!relayHost) {
@@ -33,6 +36,7 @@ const Index: React.FC = () => {
       } catch (err: any) {
         clearTimeout(timeout);
         const msg = err?.message || String(err);
+        setRelayReachable(false);
         showError(`Connection failed: ${msg}`);
         return;
       } finally {
@@ -41,14 +45,18 @@ const Index: React.FC = () => {
 
       if (resp) {
         if (resp.ok) {
+          setRelayReachable(true);
           showSuccess(`Relay reachable (HTTP ${resp.status}).`);
         } else {
+          setRelayReachable(false);
           showError(`Relay responded: HTTP ${resp.status} ${resp.statusText}`);
         }
       } else {
+        setRelayReachable(false);
         showError("No response from relay.");
       }
     } catch (err: any) {
+      setRelayReachable(false);
       showError(err?.message || String(err));
     } finally {
       dismissToast(toastId);
@@ -84,7 +92,7 @@ const Index: React.FC = () => {
           <section>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               <div className="w-full">
-                <AIChat relayHost={relayHost} apiKey={apiKey} />
+                <AIChat relayHost={relayHost} apiKey={apiKey} relayReachable={relayReachable} />
               </div>
 
               <div className="w-full">
