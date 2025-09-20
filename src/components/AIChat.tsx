@@ -11,6 +11,7 @@ import { Bot, User } from "lucide-react";
 import { useRpcConfirm } from "@/components/rpc-confirm";
 import { useAIChat, type AIMessage } from "@/hooks/useAIChat";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
+import { interpretTextAsRelayCommand } from "@/hooks/useNLInterpreter";
 
 interface Props {
   relayHost: string;
@@ -137,7 +138,7 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
     if (!results || results.length === 0) {
       return "No matching employees were found.";
     }
-    const lines = results.slice(0, 5).map((r: any) => {
+    const lines = results.slice(0, 10).map((r: any) => {
       const dept = r.department_id ? ` (${r.department_id[1]})` : "";
       const email = r.work_email ? ` — ${r.work_email}` : "";
       const phone = r.work_phone ? ` — ${r.work_phone}` : "";
@@ -171,7 +172,7 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
     return `Fallback employee search failed (HTTP ${res.status}).`;
   };
 
-  // New: OpenAI HTTP fallback (client-supplied key)
+  // OpenAI HTTP fallback (client-supplied key)
   const callOpenAIFallback = async (userMessageText: string, historyMessages: Message[]) => {
     if (!openaiKey) throw new Error("No OpenAI API key provided");
     const url = "https://api.openai.com/v1/chat/completions";
@@ -215,6 +216,31 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
     return content as string;
   };
 
+  // New helper: POST to /api/search_employee (preferred endpoint)
+  const postSearchEmployee = async (name: string, limit = 20) => {
+    const url = `${relayHost.replace(/\/$/, "")}/api/search_employee`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "X-API-Key": apiKey } : {}),
+        },
+        body: JSON.stringify({ name, limit }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      const json = await resp.json().catch(() => null);
+      return { ok: resp.ok, parsed: json, status: resp.status, text: json ? JSON.stringify(json) : null };
+    } catch (err: any) {
+      clearTimeout(timeout);
+      return { ok: false, error: err?.message || String(err) };
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
@@ -238,119 +264,206 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
     const toastId = showLoading("AI Assistant is thinking...");
 
     try {
-      const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+      // Run rule-based interpreter to decide the best relay endpoint/payload
+      const interp = interpretTextAsRelayCommand(userMessageText);
 
-      // Build payload - the relay might expect the conversation as context
-      const payload = {
-        model: "ai.assistant",
-        method: "query",
-        args: [
-          // conversation history (only minimal context to keep payload small)
-          messages.map((m) => ({ role: m.role, content: m.content })),
-          // new user message
-          { role: "user", content: userMessageText },
-        ],
-        kwargs: {},
-      };
-
-      // Ask user to confirm HTTP/WS RPC payload before sending
+      // Confirm the action with the user (consistent UX)
       try {
-        const ok = await confirmRpc(payload);
+        const ok = await confirmRpc({ intent: interp.type, payload: interp.payload, _inferred: true });
         if (!ok) {
-          showError("AI query cancelled by user.");
+          showError("Action cancelled by user.");
           setIsLoading(false);
           dismissToast(toastId);
           return;
         }
       } catch {
-        showError("Unable to confirm AI query.");
+        showError("Unable to confirm action.");
         setIsLoading(false);
         dismissToast(toastId);
         return;
       }
 
-      // If WebSocket connected, send over WS and rely on incoming messages to populate the reply
-      if (status === "connected" && send) {
-        await send(payload);
-        showSuccess("Sent via WebSocket; awaiting assistant reply.");
-        // The useAIChat hook will append incoming assistant messages when received.
+      // Branch based on interpretation
+      if (interp.type === "search_employee") {
+        // Preferred path: POST /api/search_employee
+        const name = interp.payload.name ?? userMessageText;
+        const r = await postSearchEmployee(name, interp.payload.limit ?? 20);
+
+        if (r.ok && r.parsed && r.parsed.success) {
+          const summary = formatEmployeeSummary(r.parsed.employees || []);
+          const assistantMessage: Message = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: summary,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+          showSuccess("Employee search returned results.");
+        } else {
+          // If endpoint missing or returned an error, fallback to execute_method employee search
+          showError("Preferred /api/search_employee failed or returned no data; trying execute_method fallback.");
+          const fallbackText = await runFallbackEmployeeSearch(name);
+          const assistantMessage: Message = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: fallbackText,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        }
         return;
       }
 
-      // Fallback to HTTP POST
-      const res = await postToRelay(url, payload, apiKey, 30000);
-
-      // If parsed JSON looks like an RPC response
-      const textLower = (res.text || "").toLowerCase();
-
-      const aiMissing =
-        // JSON error structures
-        (res.parsed &&
-          ((res.parsed.error && typeof res.parsed.error === "string" && res.parsed.error.toLowerCase().includes("object ai.assistant")) ||
-            (res.parsed.message && typeof res.parsed.message === "string" && res.parsed.message.toLowerCase().includes("object ai.assistant")))) ||
-        // plain text (including XML-RPC Fault) that mentions the missing object
-        textLower.includes("object ai.assistant doesn't exist".toLowerCase()) ||
-        textLower.includes("object ai.assistant does not exist") ||
-        textLower.includes("object ai.assistant doesn't exist");
-
-      if (res.ok && res.parsed && res.parsed.success) {
-        const assistantMessage: Message = {
-          id: Date.now() + 1,
-          role: "assistant",
-          content: typeof res.parsed.result === "string" ? res.parsed.result : JSON.stringify(res.parsed.result),
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
-        showSuccess("AI Assistant responded.");
-      } else if (aiMissing) {
-        // Detected missing ai.assistant model — try OpenAI fallback (if key provided), otherwise run employee fallback
-        showError("ai.assistant model not found on relay; attempting fallback queries.");
-
-        if (openaiKey) {
-          try {
-            const openAiText = await callOpenAIFallback(userMessageText, messages);
+      if (interp.type === "sales_analysis") {
+        // POST to /api/execute_method with prepared read_group payload
+        const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+        const r = await postToRelay(url, interp.payload, apiKey, 20000);
+        if (r.ok && r.parsed && r.parsed.success) {
+          // Create a human readable summary of grouped sales
+          const groups = r.parsed.result || [];
+          if (Array.isArray(groups) && groups.length > 0) {
+            const lines = groups.slice(0, 12).map((g: any) => {
+              const period =
+                g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? "(period)";
+              const amt = g.amount_total ?? g.amount ?? 0;
+              return `${period}: ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+                amt,
+              )} (${g.__count ?? 0} orders)`;
+            });
             const assistantMessage: Message = {
               id: Date.now() + 1,
               role: "assistant",
-              content: `(OpenAI fallback) ${openAiText}`,
+              content: `Sales analysis (${interp.description}):\n` + lines.join("\n"),
             };
             setMessages((prev) => [...prev, assistantMessage]);
-            showSuccess("Assistant responded via OpenAI fallback.");
-          } catch (err: any) {
-            // If OpenAI fallback fails, try employee search fallback
-            const errMsg = err?.message || String(err);
-            showError(`OpenAI fallback failed: ${errMsg}. Trying targeted employee search.`);
+            showSuccess("Sales analysis returned results.");
+          } else {
+            const assistantMessage: Message = {
+              id: Date.now() + 1,
+              role: "assistant",
+              content: `Sales analysis returned no grouped results.`,
+            };
+            setMessages((prev) => [...prev, assistantMessage]);
+            showError("No sales groups returned.");
+          }
+        } else {
+          const errTxt = (r.parsed && (r.parsed.error || r.parsed.message)) || r.text || `HTTP ${r.status}`;
+          showError(`Sales analysis failed: ${String(errTxt).slice(0, 400)}`);
+          const assistantMessage: Message = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: `Sorry, sales analysis failed: ${String(errTxt).slice(0, 500)}`,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        }
+        return;
+      }
+
+      if (interp.type === "generate_dashboard") {
+        // Ask relay to generate a dashboard (ai.assistant.generate_dashboard via execute_method)
+        const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+        const r = await postToRelay(url, interp.payload, apiKey, 20000);
+        if (r.ok && r.parsed && r.parsed.success) {
+          const cfg = typeof r.parsed.result === "string" ? JSON.parse(r.parsed.result) : r.parsed.result;
+          const assistantMessage: Message = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: `Generated dashboard preview (JSON):\n${JSON.stringify(cfg, null, 2)}`,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+          showSuccess("Dashboard generation succeeded (preview returned).");
+        } else {
+          const errTxt = (r.parsed && (r.parsed.error || r.parsed.message)) || r.text || `HTTP ${r.status}`;
+          showError(`Dashboard generation failed: ${String(errTxt).slice(0, 400)}`);
+          const assistantMessage: Message = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: `Dashboard generation failed: ${String(errTxt).slice(0, 400)}`,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        }
+        return;
+      }
+
+      // Default: ai_assistant flow (can go via WS if connected)
+      if (interp.type === "ai_assistant") {
+        // If WebSocket connected, send via WS
+        if (status === "connected" && send) {
+          await send(interp.payload);
+          showSuccess("Sent via WebSocket; awaiting assistant reply.");
+          return;
+        }
+
+        // Otherwise POST to execute_method (HTTP)
+        const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+        const res = await postToRelay(url, interp.payload, apiKey, 30000);
+
+        const textLower = (res.text || "").toLowerCase();
+
+        const aiMissing =
+          (res.parsed &&
+            ((res.parsed.error && typeof res.parsed.error === "string" && res.parsed.error.toLowerCase().includes("object ai.assistant")) ||
+              (res.parsed.message && typeof res.parsed.message === "string" && res.parsed.message.toLowerCase().includes("object ai.assistant")))) ||
+          textLower.includes("object ai.assistant doesn't exist") ||
+          textLower.includes("object ai.assistant does not exist");
+
+        if (res.ok && res.parsed && res.parsed.success) {
+          const assistantMessage: Message = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content: typeof res.parsed.result === "string" ? res.parsed.result : JSON.stringify(res.parsed.result),
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+          showSuccess("AI Assistant responded.");
+          return;
+        } else if (aiMissing) {
+          // attempt OpenAI or employee fallback (existing behavior)
+          showError("ai.assistant model not found on relay; attempting fallback queries.");
+
+          if (openaiKey) {
+            try {
+              const openAiText = await callOpenAIFallback(userMessageText, messages);
+              const assistantMessage: Message = {
+                id: Date.now() + 1,
+                role: "assistant",
+                content: `(OpenAI fallback) ${openAiText}`,
+              };
+              setMessages((prev) => [...prev, assistantMessage]);
+              showSuccess("Assistant responded via OpenAI fallback.");
+            } catch (err: any) {
+              const errMsg = err?.message || String(err);
+              showError(`OpenAI fallback failed: ${errMsg}. Trying targeted employee search.`);
+              const fallbackText = await runFallbackEmployeeSearch(userMessageText);
+              const assistantMessage: Message = {
+                id: Date.now() + 1,
+                role: "assistant",
+                content:
+                  `I couldn't find the ai.assistant model on the relay. I attempted an OpenAI fallback but it failed: ${errMsg}\n\nEmployee search fallback:\n\n${fallbackText}`,
+              };
+              setMessages((prev) => [...prev, assistantMessage]);
+            }
+          } else {
             const fallbackText = await runFallbackEmployeeSearch(userMessageText);
             const assistantMessage: Message = {
               id: Date.now() + 1,
               role: "assistant",
               content:
-                `I couldn't find the ai.assistant model on the relay. I attempted an OpenAI fallback but it failed: ${errMsg}\n\nEmployee search fallback:\n\n${fallbackText}`,
+                `I couldn't find the ai.assistant model on the relay. ${fallbackText}\n\nIf you want richer responses, provide an OpenAI API key in Settings to enable a direct LLM fallback.`,
             };
             setMessages((prev) => [...prev, assistantMessage]);
           }
+          return;
         } else {
-          // No OpenAI key: run employee fallback
-          const fallbackText = await runFallbackEmployeeSearch(userMessageText);
+          const errorMessage =
+            (res.parsed && (res.parsed.error || res.parsed.message)) ||
+            (res.text ? res.text.slice(0, 1000) : `HTTP ${res.status}`);
+          showError(`AI query failed: ${String(errorMessage).slice(0, 200)}`);
           const assistantMessage: Message = {
             id: Date.now() + 1,
             role: "assistant",
-            content:
-              `I couldn't find the ai.assistant model on the relay. ${fallbackText}\n\nIf you want richer responses, provide an OpenAI API key in Settings to enable a direct LLM fallback.`,
+            content: `Sorry, I couldn't complete the request: ${String(errorMessage)}`,
           };
           setMessages((prev) => [...prev, assistantMessage]);
+          return;
         }
-      } else {
-        // Generic failure: include parsed errors or text preview
-        const errorMessage =
-          (res.parsed && (res.parsed.error || res.parsed.message)) ||
-          (res.text ? res.text.slice(0, 1000) : `HTTP ${res.status}`);
-        showError(`AI query failed: ${String(errorMessage).slice(0, 200)}`);
-        const assistantMessage: Message = {
-          id: Date.now() + 1,
-          role: "assistant",
-          content: `Sorry, I couldn't complete the request: ${String(errorMessage)}`,
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
       }
     } catch (err: any) {
       const errorMessage = err?.message || String(err);
