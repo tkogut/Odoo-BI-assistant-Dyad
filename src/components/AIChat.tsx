@@ -138,7 +138,7 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
     if (!results || results.length === 0) {
       return "No matching employees were found.";
     }
-    const lines = results.slice(0, 10).map((r: any) => {
+    const lines = results.slice(0, 50).map((r: any) => {
       const dept = r.department_id ? ` (${r.department_id[1]})` : "";
       const email = r.work_email ? ` — ${r.work_email}` : "";
       const phone = r.work_phone ? ` — ${r.work_phone}` : "";
@@ -216,19 +216,22 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
     return content as string;
   };
 
-  // New helper: POST to /api/search_employee (preferred endpoint)
-  const postSearchEmployee = async (name: string, limit = 20) => {
+  // New helper: POST to /api/search_employee (preferred endpoint) — now supports optional dept
+  const postSearchEmployee = async (name?: string, limit = 20, dept?: string) => {
     const url = `${relayHost.replace(/\/$/, "")}/api/search_employee`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
+      const body: any = { limit };
+      if (name) body.name = name;
+      if (dept) body.department = dept;
       const resp = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...(apiKey ? { "X-API-Key": apiKey } : {}),
         },
-        body: JSON.stringify({ name, limit }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       clearTimeout(timeout);
@@ -285,12 +288,14 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
 
       // Branch based on interpretation
       if (interp.type === "search_employee") {
-        // Preferred path: POST /api/search_employee
-        const name = interp.payload.name ?? userMessageText;
-        const r = await postSearchEmployee(name, interp.payload.limit ?? 20);
+        const name = interp.payload.name ?? undefined;
+        const dept = (interp.payload as any).dept ?? undefined;
+        // Preferred path: POST /api/search_employee (may accept department)
+        const primary = await postSearchEmployee(name, interp.payload.limit ?? 20, dept);
 
-        if (r.ok && r.parsed && r.parsed.success) {
-          const summary = formatEmployeeSummary(r.parsed.employees || []);
+        if (primary.ok && primary.parsed && primary.parsed.success) {
+          const employees = primary.parsed.employees ?? primary.parsed.result ?? [];
+          const summary = formatEmployeeSummary(employees);
           const assistantMessage: Message = {
             id: Date.now() + 1,
             role: "assistant",
@@ -298,17 +303,64 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
           };
           setMessages((prev) => [...prev, assistantMessage]);
           showSuccess("Employee search returned results.");
-        } else {
-          // If endpoint missing or returned an error, fallback to execute_method employee search
-          showError("Preferred /api/search_employee failed or returned no data; trying execute_method fallback.");
-          const fallbackText = await runFallbackEmployeeSearch(name);
-          const assistantMessage: Message = {
-            id: Date.now() + 1,
-            role: "assistant",
-            content: fallbackText,
-          };
-          setMessages((prev) => [...prev, assistantMessage]);
+          return;
         }
+
+        // Fallback: if dept provided, try to lookup department id then search employees by department_id via execute_method
+        if (dept) {
+          try {
+            // 1) find department id by name
+            const deptPayload = {
+              model: "hr.department",
+              method: "search_read",
+              args: [[["name", "ilike", dept]]],
+              kwargs: { fields: ["id", "name"], limit: 1 },
+            };
+            const execUrl = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+            const deptRes = await postToRelay(execUrl, deptPayload, apiKey, 15000);
+            if (deptRes.ok && deptRes.parsed && deptRes.parsed.success && Array.isArray(deptRes.parsed.result) && deptRes.parsed.result.length > 0) {
+              const deptId = deptRes.parsed.result[0].id;
+              // 2) fetch employees with department_id == deptId (and by name if provided)
+              const domain: any[] = [["department_id", "=", deptId]];
+              if (name) domain.unshift(["name", "ilike", name]);
+              const empPayload = {
+                model: "hr.employee",
+                method: "search_read",
+                args: [domain],
+                kwargs: { fields: ["name", "work_email", "work_phone", "department_id"], limit: interp.payload.limit ?? 50 },
+              };
+              const empRes = await postToRelay(execUrl, empPayload, apiKey, 15000);
+              if (empRes.ok && empRes.parsed && empRes.parsed.success) {
+                const employees = empRes.parsed.result ?? [];
+                const summary = formatEmployeeSummary(employees);
+                const assistantMessage: Message = {
+                  id: Date.now() + 1,
+                  role: "assistant",
+                  content: summary,
+                };
+                setMessages((prev) => [...prev, assistantMessage]);
+                showSuccess("Employee search by department returned results.");
+                return;
+              } else {
+                // empRes failed — fall through to name-only fallback
+              }
+            } else {
+              // department not found — fall through to name-only fallback
+            }
+          } catch (err: any) {
+            // allow fallback to name-only search
+          }
+        }
+
+        // If we reach here, either dept path failed or wasn't present — try execute_method fallback searching by name
+        showError("Preferred employee endpoint failed; trying execute_method fallback by name.");
+        const fallbackText = await runFallbackEmployeeSearch(name ?? userMessageText);
+        const assistantMessage: Message = {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: fallbackText,
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
         return;
       }
 
@@ -317,7 +369,6 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
         const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
         const r = await postToRelay(url, interp.payload, apiKey, 20000);
         if (r.ok && r.parsed && r.parsed.success) {
-          // Create a human readable summary of grouped sales
           const groups = r.parsed.result || [];
           if (Array.isArray(groups) && groups.length > 0) {
             const lines = groups.slice(0, 12).map((g: any) => {

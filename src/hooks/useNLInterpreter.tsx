@@ -8,7 +8,7 @@ import { useMemo } from "react";
  * Given a user message, returns a suggested endpoint type and a prepared payload.
  * This is intentionally simple and deterministic so it works offline and doesn't
  * require external LLM calls. It targets common patterns:
- *  - employee search (prefers /api/search_employee)
+ *  - employee search (prefers /api/search_employee) and supports 'in <department>'
  *  - sales aggregation (read_group on sale.order)
  *  - dashboard generation (ask ai.assistant.generate_dashboard)
  *  - fallback to ai.assistant.query
@@ -19,7 +19,7 @@ export type NLIntentType = "search_employee" | "sales_analysis" | "generate_dash
 export type NLInterpretation =
   | {
       type: "search_employee";
-      payload: { name: string; limit?: number };
+      payload: { name?: string; dept?: string; limit?: number };
       description: string;
     }
   | {
@@ -50,10 +50,25 @@ function extractNameFromText(text: string): string | null {
   if (m && m[1]) return m[1].trim();
 
   // fallback: single capitalized token (e.g. "Kogut") or Last-name-like token
-  // Escape '-' inside the character class to avoid creating an unintended range.
   const tokenRe = /\b([A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż'\-]{2,})\b/;
   const t = text.match(tokenRe);
   if (t && t[1]) return t[1];
+
+  return null;
+}
+
+/** naive department extractor: looks for "in <department>" or "<department> department" */
+function extractDepartmentFromText(text: string): string | null {
+  const cleaned = text.trim();
+  // Try "in <dept> (department|dept)?"
+  const inRe = /\bin\s+(the\s+)?([A-Za-zĄĆĘŁŃÓŚŹŻażćęłńóśźż'\-\s]{2,}?)\s*(?:department|dept|team)?\b/i;
+  const m = cleaned.match(inRe);
+  if (m && m[2]) return m[2].trim();
+
+  // Try "<dept> department" standalone
+  const deptRe = /\b([A-Za-zĄĆĘŁŃÓŚŹŻażćęłńóśźż'\-\s]{2,}?)\s+(?:department|dept|team)\b/i;
+  const m2 = cleaned.match(deptRe);
+  if (m2 && m2[1]) return m2[1].trim();
 
   return null;
 }
@@ -65,14 +80,17 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
 
   // Employee search heuristics
   if (
-    /\b(employee|staff|colleague|people|person|employee search|find employee|who works|who is)\b/.test(lower) ||
+    /\b(employee|employees|staff|colleague|people|person|employee search|find employee|who works|who is)\b/.test(lower) ||
     (/\b(search for|find|look up)\b/.test(lower) && /[A-ZĄĆĘŁŃÓŚŹŻ]/.test(cleaned))
   ) {
-    const name = extractNameFromText(cleaned) ?? cleaned;
+    const name = extractNameFromText(cleaned) ?? undefined;
+    const dept = extractDepartmentFromText(cleaned) ?? undefined;
     return {
       type: "search_employee",
-      payload: { name: name, limit: 20 },
-      description: `Search employees for "${name}" via /api/search_employee (preferred)`,
+      payload: { name, dept, limit: 20 },
+      description: dept
+        ? `Search employees for name="${name ?? "(any)"}" in department="${dept}" via /api/search_employee (preferred)`
+        : `Search employees for "${name ?? "(any)"}" via /api/search_employee (preferred)`,
     };
   }
 
