@@ -53,11 +53,13 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const [optionsRootStatus, setOptionsRootStatus] = useState<ProbeStatus>("idle");
   const [optionsStatus, setOptionsStatus] = useState<ProbeStatus>("idle");
   const [postStatus, setPostStatus] = useState<ProbeStatus>("idle");
+  const [aiCheckStatus, setAiCheckStatus] = useState<ProbeStatus>("idle");
 
   const [getResult, setGetResult] = useState<ResultBox | null>(null);
   const [optionsRootResult, setOptionsRootResult] = useState<OptionsResult | null>(null);
   const [optionsResult, setOptionsResult] = useState<OptionsResult | null>(null);
   const [postResult, setPostResult] = useState<ResultBox | null>(null);
+  const [aiCheckResult, setAiCheckResult] = useState<any>(null);
 
   const confirmRpc = useRpcConfirm();
 
@@ -77,6 +79,9 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const genPostExecuteCurl = (host: string, orig: string, key?: string) =>
     `bash\ncurl -i -X POST "${normalizeHost(host)}/api/execute_method" \\\n  -H "Origin: ${orig}" \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: ${key ?? ""}" \\\n  -d '{"model":"res.partner","method":"search_read","args":[],"kwargs":{}}'`;
 
+  const genAiCheckCurl = (host: string, orig: string, key?: string) =>
+    `bash\ncurl -i -X POST "${normalizeHost(host)}/api/execute_method" \\\n  -H "Origin: ${orig}" \\\n  -H "Content-Type: application/json" \\\n  -H "X-API-Key: ${key ?? ""}" \\\n  -d '{"model":"ir.model","method":"search_read","args":[[["model","=","ai.assistant"]]],"kwargs":{"fields":["id","model","name"],"limit":5}}'`;
+
   // editable curl states
   const [optionsRootCurl, setOptionsRootCurl] = useState(() => genOptionsRootCurl(relayHost, origin));
   const [optionsRootEdited, setOptionsRootEdited] = useState(false);
@@ -90,11 +95,15 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const [postExecuteCurl, setPostExecuteCurl] = useState(() => genPostExecuteCurl(relayHost, origin, apiKey));
   const [postExecuteEdited, setPostExecuteEdited] = useState(false);
 
+  const [aiCheckCurl, setAiCheckCurl] = useState(() => genAiCheckCurl(relayHost, origin, apiKey));
+  const [aiCheckEdited, setAiCheckEdited] = useState(false);
+
   useEffect(() => {
     if (!optionsRootEdited) setOptionsRootCurl(genOptionsRootCurl(relayHost, origin));
     if (!getRootEdited) setGetRootCurl(genGetRootCurl(relayHost, origin, apiKey));
     if (!optionsExecuteEdited) setOptionsExecuteCurl(genOptionsExecuteCurl(relayHost, origin));
     if (!postExecuteEdited) setPostExecuteCurl(genPostExecuteCurl(relayHost, origin, apiKey));
+    if (!aiCheckEdited) setAiCheckCurl(genAiCheckCurl(relayHost, origin, apiKey));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [relayHost, apiKey, origin]);
 
@@ -353,6 +362,77 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
     }
   };
 
+  // New: run ai.assistant existence check via ir.model.search_read
+  const runAiCheck = async () => {
+    if (!relayHost) {
+      showError("Please provide a Relay Host first.");
+      return;
+    }
+
+    const payload = {
+      model: "ir.model",
+      method: "search_read",
+      args: [[["model", "=", "ai.assistant"]]],
+      kwargs: { fields: ["id", "model", "name"], limit: 5 },
+    };
+
+    try {
+      const ok = await confirmRpc({ ...payload, _diagnostic: true });
+      if (!ok) {
+        showError("ai.assistant check cancelled by user.");
+        return;
+      }
+    } catch {
+      showError("Unable to confirm ai.assistant check.");
+      return;
+    }
+
+    setAiCheckStatus("running");
+    setAiCheckResult(null);
+    const toastId = showLoading("Checking for ai.assistant...");
+    const url = `${normalizeHost(relayHost)}/api/execute_method`;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(apiKey ? { "X-API-Key": apiKey } : {}),
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        let parsed = null;
+        try {
+          parsed = await resp.json();
+        } catch {
+          parsed = null;
+        }
+
+        setAiCheckResult(parsed ?? { status: resp.status, statusText: resp.statusText });
+        if (resp.ok && parsed && parsed.success) {
+          setAiCheckStatus("success");
+          showSuccess("ai.assistant check completed.");
+        } else {
+          setAiCheckStatus("error");
+          showError("ai.assistant not found or returned error.");
+        }
+      } catch (err: any) {
+        clearTimeout(timeout);
+        const msg = err?.message || String(err);
+        setAiCheckResult({ error: msg });
+        setAiCheckStatus("error");
+        showError(`ai.assistant check failed: ${msg}`);
+      }
+    } finally {
+      dismissToast(toastId);
+    }
+  };
+
   // reset helpers
   const resetOptionsRootCurl = () => {
     setOptionsRootCurl(genOptionsRootCurl(relayHost, origin));
@@ -369,6 +449,12 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
   const resetPostExecuteCurl = () => {
     setPostExecuteCurl(genPostExecuteCurl(relayHost, origin, apiKey));
     setPostExecuteEdited(false);
+  };
+  const resetAiCheckCurl = () => {
+    setAiCheckCurl(genAiCheckCurl(relayHost, origin, apiKey));
+    setAiCheckEdited(false);
+    setAiCheckResult(null);
+    setAiCheckStatus("idle");
   };
 
   return (
@@ -477,6 +563,24 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
             resultJson={postResult ? postResult.parsedJson ?? postResult : undefined}
             curlEdited={postExecuteEdited}
           />
+
+          <ProbeCard
+            title="Check ai.assistant"
+            description="Query ir.model to determine whether the ai.assistant model exists on the upstream relay."
+            status={aiCheckStatus}
+            curlValue={aiCheckCurl}
+            onCurlChange={(v) => {
+              setAiCheckCurl(v);
+              setAiCheckEdited(true);
+            }}
+            onResetCurl={resetAiCheckCurl}
+            onCopyCurl={() => copyToClipboard(aiCheckCurl)}
+            onRun={runAiCheck}
+            runLabel="Check"
+            runDisabled={aiCheckStatus === "running"}
+            resultJson={aiCheckResult}
+            curlEdited={aiCheckEdited}
+          />
         </div>
 
         <div>
@@ -490,6 +594,9 @@ export const ConnectivityDiagnostics: React.FC<ConnectivityDiagnosticsProps> = (
             </li>
             <li>
               Use the editable cURL block to tweak and reproduce requests from a terminal and verify headers on the relay side.
+            </li>
+            <li>
+              Use the "Check ai.assistant" probe to confirm whether the relay exposes the ai.assistant model; if it's missing, consider enabling the AI module upstream or provide an OpenAI API key in Settings to enable a client-side fallback.
             </li>
           </ul>
         </div>

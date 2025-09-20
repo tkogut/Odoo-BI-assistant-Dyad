@@ -35,8 +35,11 @@ type ConnectionTest = {
 const Settings: React.FC = () => {
   const [relayHost, setRelayHost] = useLocalStorage<string>("relayHost", DEFAULT_RELAY);
   const [apiKey, setApiKey] = useLocalStorage<string>("apiKey", "");
+  const [openAiKey, setOpenAiKey] = useLocalStorage<string>("openaiApiKey", "");
+
   const [localRelay, setLocalRelay] = useState<string>(relayHost);
   const [localKey, setLocalKey] = useState<string>(apiKey);
+  const [localOpenAi, setLocalOpenAi] = useState<string>(openAiKey);
 
   const [configs, setConfigs] = useLocalStorage<RelayConfig[]>("relayConfigs", []);
   const [tests, setTests] = useLocalStorage<ConnectionTest[]>("connectionTests", []);
@@ -48,7 +51,7 @@ const Settings: React.FC = () => {
   const confirmRpc = useRpcConfirm();
 
   const onSave = async () => {
-    const payload = { relayHost: localRelay, apiKey: localKey };
+    const payload = { relayHost: localRelay, apiKey: localKey, openAiKey: localOpenAi ? "[hidden]" : "" };
     try {
       const ok = await confirmRpc({ type: "save_settings", payload });
       if (!ok) {
@@ -64,6 +67,7 @@ const Settings: React.FC = () => {
     try {
       setRelayHost(localRelay);
       setApiKey(localKey);
+      setOpenAiKey(localOpenAi);
       showSuccess("Settings saved to localStorage.");
     } catch (err: any) {
       showError(err?.message || "Failed to save settings.");
@@ -75,8 +79,10 @@ const Settings: React.FC = () => {
   const onReset = () => {
     setLocalRelay(DEFAULT_RELAY);
     setLocalKey("");
+    setLocalOpenAi("");
     setRelayHost(DEFAULT_RELAY);
     setApiKey("");
+    setOpenAiKey("");
     showSuccess("Settings reset to defaults.");
   };
 
@@ -250,6 +256,21 @@ const Settings: React.FC = () => {
                   onChange={(e) => setLocalKey(e.target.value)}
                   placeholder="Optional API key"
                 />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="openai-api-key">OpenAI API Key</Label>
+                <Input
+                  id="openai-api-key"
+                  value={localOpenAi}
+                  onChange={(e) => setLocalOpenAi(e.target.value)}
+                  placeholder="sk-..."
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Optional: provide an OpenAI API key to enable client-side LLM fallback when ai.assistant is not available on the relay.
+                </p>
               </div>
             </div>
 

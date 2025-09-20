@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { Bot, User } from "lucide-react";
 import { useRpcConfirm } from "@/components/rpc-confirm";
 import { useAIChat, type AIMessage } from "@/hooks/useAIChat";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 
 interface Props {
   relayHost: string;
@@ -87,6 +88,9 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
   // Keep track of which ws message ids we've already merged to avoid duplicates
   const mergedWsIds = useRef<Set<number>>(new Set());
 
+  // OpenAI key stored in localStorage via hook (empty string if missing)
+  const [openaiKey] = useLocalStorage<string>("openaiApiKey", "");
+
   useEffect(() => {
     if (!wsMessages || wsMessages.length === 0) return;
     setMessages((prev) => {
@@ -160,6 +164,50 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
       return `Fallback employee search attempted but relay returned non-JSON response: ${res.text.slice(0, 500)}`;
     }
     return `Fallback employee search failed (HTTP ${res.status}).`;
+  };
+
+  // New: OpenAI HTTP fallback (client-supplied key)
+  const callOpenAIFallback = async (userMessageText: string, historyMessages: Message[]) => {
+    if (!openaiKey) throw new Error("No OpenAI API key provided");
+    const url = "https://api.openai.com/v1/chat/completions";
+    const messagesPayload = [
+      {
+        role: "system",
+        content:
+          "You are an Odoo BI assistant. If the relay does not provide the ai.assistant model, try to answer concisely based on the user's question and, when appropriate, indicate that this response was generated via an external LLM fallback.",
+      },
+      // include a short conversation history to provide context (limit to last 6)
+      ...historyMessages.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: userMessageText },
+    ];
+    const body = {
+      model: "gpt-3.5-turbo",
+      messages: messagesPayload,
+      temperature: 0.2,
+      max_tokens: 800,
+      n: 1,
+    };
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => "");
+      throw new Error(`OpenAI API error: ${resp.status} ${resp.statusText} ${txt}`);
+    }
+
+    const json = await resp.json();
+    const content = json?.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("OpenAI returned an unexpected response");
+    }
+    return content as string;
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -249,16 +297,43 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey }) => {
         setMessages((prev) => [...prev, assistantMessage]);
         showSuccess("AI Assistant responded.");
       } else if (aiMissing) {
-        // Detected missing ai.assistant model — run fallback
-        showError("ai.assistant model not found on relay; attempting targeted fallback queries.");
-        const fallbackText = await runFallbackEmployeeSearch(userMessageText);
-        const assistantMessage: Message = {
-          id: Date.now() + 1,
-          role: "assistant",
-          content:
-            `I couldn't find the ai.assistant model on the relay. I ran an employee search fallback using your query:\n\n${fallbackText}\n\nIf you expected an AI assistant, ensure your relay exposes the ai.assistant model or configure an AI-capable backend.`,
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
+        // Detected missing ai.assistant model — try OpenAI fallback (if key provided), otherwise run employee fallback
+        showError("ai.assistant model not found on relay; attempting fallback queries.");
+
+        if (openaiKey) {
+          try {
+            const openAiText = await callOpenAIFallback(userMessageText, messages);
+            const assistantMessage: Message = {
+              id: Date.now() + 1,
+              role: "assistant",
+              content: `(OpenAI fallback) ${openAiText}`,
+            };
+            setMessages((prev) => [...prev, assistantMessage]);
+            showSuccess("Assistant responded via OpenAI fallback.");
+          } catch (err: any) {
+            // If OpenAI fallback fails, try employee search fallback
+            const errMsg = err?.message || String(err);
+            showError(`OpenAI fallback failed: ${errMsg}. Trying targeted employee search.`);
+            const fallbackText = await runFallbackEmployeeSearch(userMessageText);
+            const assistantMessage: Message = {
+              id: Date.now() + 1,
+              role: "assistant",
+              content:
+                `I couldn't find the ai.assistant model on the relay. I attempted an OpenAI fallback but it failed: ${errMsg}\n\nEmployee search fallback:\n\n${fallbackText}`,
+            };
+            setMessages((prev) => [...prev, assistantMessage]);
+          }
+        } else {
+          // No OpenAI key: run employee fallback
+          const fallbackText = await runFallbackEmployeeSearch(userMessageText);
+          const assistantMessage: Message = {
+            id: Date.now() + 1,
+            role: "assistant",
+            content:
+              `I couldn't find the ai.assistant model on the relay. ${fallbackText}\n\nIf you want richer responses, provide an OpenAI API key in Settings to enable a direct LLM fallback.`,
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        }
       } else {
         // Generic failure: include parsed errors or text preview
         const errorMessage =
