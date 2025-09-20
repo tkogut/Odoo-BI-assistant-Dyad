@@ -1,3 +1,4 @@
+RPC interpreter into chat flow with safe fallback to heuristics; validate and forward RPC payloads to relay.">
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
@@ -18,6 +19,8 @@ import {
   runFallbackEmployeeSearch,
   callOpenAIFallback,
 } from "@/components/ai-chat/utils";
+import interpretTextAsRelayCommand from "@/hooks/useNLInterpreter";
+import interpretWithOpenAI from "@/hooks/useOpenAIInterpreter";
 
 interface Props {
   relayHost: string;
@@ -75,7 +78,54 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
     const toastId = showLoading("AI Assistant is thinking...");
 
     try {
-      const interp = (await import("@/hooks/useNLInterpreter")).interpretTextAsRelayCommand(userMessageText);
+      // If OpenAI key is configured, first attempt the strict NL->RPC mapping via OpenAI.
+      let interpretedPayload: any | null = null;
+      if (openaiKey) {
+        try {
+          interpretedPayload = await interpretWithOpenAI(openaiKey, userMessageText);
+        } catch (err: any) {
+          // Surface a useful message but continue to the local heuristic fallback
+          showError(`OpenAI interpretation failed: ${err?.message || String(err)} — falling back to local interpreter.`);
+          interpretedPayload = null;
+        }
+      }
+
+      // If we obtained a payload from OpenAI, validate and execute it
+      if (interpretedPayload) {
+        // Confirm the exact payload with the user before executing
+        try {
+          const ok = await confirmRpc({ inferred_via: "openai", payload: interpretedPayload });
+          if (!ok) {
+            showError("Action cancelled by user.");
+            setIsLoading(false);
+            dismissToast(toastId);
+            return;
+          }
+        } catch {
+          showError("Unable to confirm action.");
+          setIsLoading(false);
+          dismissToast(toastId);
+          return;
+        }
+
+        // Execute payload via relay (HTTP)
+        const execUrl = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+        const r = await postToRelay(execUrl, interpretedPayload, apiKey, 30000);
+        if (r.ok && r.parsed && r.parsed.success) {
+          const resultText = typeof r.parsed.result === "string" ? r.parsed.result : JSON.stringify(r.parsed.result, null, 2);
+          pushAssistant(resultText);
+          showSuccess("Executed interpreted payload successfully.");
+        } else {
+          const errTxt = (r.parsed && (r.parsed.error || r.parsed.message)) || r.text || `HTTP ${r.status}`;
+          pushAssistant(`Execution failed: ${String(errTxt).slice(0, 1000)}`);
+          showError(`Execution failed: ${String(errTxt).slice(0, 200)}`);
+        }
+
+        return;
+      }
+
+      // No OpenAI payload — fallback to local heuristic interpreter
+      const interp = interpretTextAsRelayCommand(userMessageText);
 
       try {
         const ok = await confirmRpc({ intent: interp.type, payload: interp.payload, _inferred: true });
@@ -147,7 +197,7 @@ export const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = fa
         return;
       }
 
-      // Sales analysis flows (unchanged logic, kept concise)
+      // Sales analysis flows
       if (interp.type === "sales_analysis") {
         const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
         const r = await postToRelay(url, interp.payload, apiKey, 20000);
