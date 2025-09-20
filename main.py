@@ -1,47 +1,60 @@
 import os
 import json
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
+from urllib.parse import urlparse, urlunparse, urlencode
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+import httpx
+import websockets
+
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, Response
 from pydantic import BaseModel
 
-# Import local backend helpers
+# Local helpers (in-repo)
 from backend import observability as observability  # simple metrics helpers
 from backend.relay_api import get_memory_manager  # memory manager stub
 
-app = FastAPI(title="Relay Mock")
+# Basic logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("relay-proxy")
 
-RELAY_API_KEY = os.getenv('RELAY_API_KEY', 'super_rooster')
+# Environment configuration
+RELAY_API_KEY = os.getenv("RELAY_API_KEY", "super_rooster")
+RELAY_UPSTREAM = os.getenv("RELAY_UPSTREAM")
+if not RELAY_UPSTREAM:
+    raise RuntimeError("RELAY_UPSTREAM must be set for proxy mode (e.g. http://localhost:8001)")
 
-# FRONTEND_ORIGIN can be a comma-separated list of allowed frontend origins.
-# Default includes common dev ports plus the one reported by your browser.
+RELAY_PORT = int(os.getenv("RELAY_PORT", os.getenv("PORT", "8000")))
 FRONTEND_ORIGIN = os.getenv(
-    'FRONTEND_ORIGIN',
-    'http://localhost:3000,http://localhost:5173,http://localhost:8000,http://localhost:8080,http://localhost:32100'
+    "FRONTEND_ORIGIN",
+    "http://localhost:3000,http://localhost:5173,http://localhost:8000,http://localhost:8080,http://localhost:32100",
 )
 
-# Build a de-duplicated list of allowed origins from the env var
-ALLOWED_ORIGINS = []
+# Build a de-duplicated list of allowed origins
+ALLOWED_ORIGINS: List[str] = []
 for part in (FRONTEND_ORIGIN or "").split(","):
     p = part.strip()
     if p and p not in ALLOWED_ORIGINS:
         ALLOWED_ORIGINS.append(p)
 
-# Always include localhost origins commonly used in development just in case
-for fallback in ["http://localhost:3000", "http://localhost:5173", "http://localhost:8000", "http://localhost:8080", "http://localhost:32100"]:
+# Ensure common fallbacks
+for fallback in [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8000",
+    "http://localhost:8080",
+    "http://localhost:32100",
+]:
     if fallback not in ALLOWED_ORIGINS:
         ALLOWED_ORIGINS.append(fallback)
 
-# Debug: print allowed origins so you can verify on startup
-print(f"[DEBUG] CORS allowed origins: {ALLOWED_ORIGINS}")
+logger.info("CORS allowed origins: %s", ALLOWED_ORIGINS)
+logger.info("Proxying requests to RELAY_UPSTREAM=%s", RELAY_UPSTREAM)
+
+app = FastAPI(title="Relay Proxy")
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,18 +64,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory API key store for admin endpoints and quota enforcement
-import uuid
-from datetime import datetime
+_memory = get_memory_manager()
 
-API_KEYS = {}
+# Utility: filter hop-by-hop headers that should not be forwarded back to client
+HOP_BY_HOP = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+}
 
-def today_str():
-    return datetime.utcnow().strftime('%Y%m%d')
 
 def require_master(x_api_key: Optional[str]):
     if x_api_key != RELAY_API_KEY:
-        raise HTTPException(status_code=401, detail='Unauthorized')
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 class ExecuteMethodRequest(BaseModel):
@@ -72,175 +92,179 @@ class ExecuteMethodRequest(BaseModel):
     kwargs: Optional[Dict[str, Any]] = {}
 
 
-# Instantiate or access shared memory manager (stub)
-_memory = get_memory_manager()
+@app.on_event("startup")
+async def on_startup():
+    logger.info("Relay proxy starting up (port=%s)", RELAY_PORT)
 
 
-@app.post('/api/execute_method')
-async def execute_method(payload: ExecuteMethodRequest, x_api_key: Optional[str] = Header(None)):
-    """Mock execute method endpoint. Requires X-API-Key header matching RELAY_API_KEY."""
-    # Debug: log incoming key and known keys
-    print(f"[DEBUG] execute_method called with x_api_key={x_api_key}")
-    print(f"[DEBUG] known API_KEYS={list(API_KEYS.keys())}")
-    # Accept master key or any created API key
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    if x_api_key != RELAY_API_KEY and x_api_key not in API_KEYS:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    # record a metric for observability
-    try:
-        observability.increment_api_calls()
-    except Exception:
-        # metrics must not break the main flow
-        pass
-
-    # Return a predictable mock result
-    # Quota enforcement: if a key has quota_per_day set, enforce it
-    key = x_api_key or 'anonymous'
-    API_KEYS.setdefault(key, {'owner': key, 'quota_per_day': None, 'usage': {}})
-    quota = API_KEYS[key].get('quota_per_day')
-    today = today_str()
-    current_usage = API_KEYS[key]['usage'].get(today, 0)
-    if quota is not None:
-        try:
-            q = int(quota)
-        except Exception:
-            q = None
-        if q is not None and current_usage >= q:
-            # quota exceeded
-            raise HTTPException(status_code=429, detail='Daily quota exceeded')
-    # increment usage
-    API_KEYS[key]['usage'][today] = current_usage + 1
-
-    # Example use of the memory manager stub: keep a tiny usage counter per key
-    try:
-        mm_key = f"usage_count:{key}"
-        prev = _memory.get(mm_key) or 0
-        _memory.set(mm_key, prev + 1)
-    except Exception:
-        pass
-
-    result = [{
-        "model": payload.model,
-        "method": payload.method,
-        "args": payload.args,
-        "kwargs": payload.kwargs,
-    }]
-    return {"success": True, "result": result}
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("Relay proxy shutting down")
 
 
-@app.options('/api/execute_method')
-async def execute_method_options(origin: Optional[str] = Header(None)):
-    # Helpful for frontend preflight inspection
-    return {
-        "allowed_origin": FRONTEND_ORIGIN,
-        "received_origin": origin,
-        "allowed_methods": ["POST", "OPTIONS"],
-        "allowed_headers": ["Content-Type", "X-API-Key"],
-    }
+# --- Proxy for /api/execute_method (OPTIONS + POST) ---
+@app.api_route("/api/execute_method", methods=["OPTIONS", "POST"])
+async def proxy_execute_method(request: Request, x_api_key: Optional[str] = Header(None)):
+    """
+    Forward OPTIONS and POST to the configured RELAY_UPSTREAM /api/execute_method endpoint.
+    Preserves key headers like Origin and X-API-Key and returns upstream's response status/content.
+    """
+    upstream_url = RELAY_UPSTREAM.rstrip("/") + "/api/execute_method"
+
+    # Build headers to forward — include common CORS preflight headers and the API key
+    incoming = {k.lower(): v for k, v in request.headers.items()}
+    headers_to_send = {}
+    if "origin" in incoming:
+        headers_to_send["Origin"] = incoming["origin"]
+    if "access-control-request-method" in incoming:
+        headers_to_send["Access-Control-Request-Method"] = incoming["access-control-request-method"]
+    if "access-control-request-headers" in incoming:
+        headers_to_send["Access-Control-Request-Headers"] = incoming["access-control-request-headers"]
+    # Content-Type for POST
+    if incoming.get("content-type"):
+        headers_to_send["Content-Type"] = incoming["content-type"]
+    # Forward X-API-Key if present (explicitly)
+    if x_api_key:
+        headers_to_send["X-API-Key"] = x_api_key
+
+    logger.debug("Proxying %s %s to upstream %s headers=%s", request.method, request.url.path, upstream_url, headers_to_send)
+
+    async with httpx.AsyncClient() as client:
+        if request.method == "OPTIONS":
+            try:
+                resp = await client.options(upstream_url, headers=headers_to_send, timeout=10.0)
+            except httpx.HTTPError as e:
+                logger.warning("Upstream OPTIONS failed: %s", e)
+                raise HTTPException(status_code=502, detail="Upstream OPTIONS failed")
+            # Forward relevant headers (filter hop-by-hop)
+            out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP}
+            return Response(status_code=resp.status_code, headers=out_headers, content=resp.content)
+        else:
+            body = await request.body()
+            try:
+                resp = await client.post(upstream_url, headers=headers_to_send, content=body, timeout=30.0)
+            except httpx.HTTPError as e:
+                logger.warning("Upstream POST failed: %s", e)
+                raise HTTPException(status_code=502, detail="Upstream POST failed")
+            out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP_BY_HOP}
+            return Response(status_code=resp.status_code, headers=out_headers, content=resp.content)
 
 
-@app.websocket('/ws/ai-chat')
-async def ai_chat_ws(websocket: WebSocket):
-    """Simple mock WebSocket that streams three JSON chunks then closes.
-
-    Accepts query parameter `api_key` or header `x-api-key` (if provided by client).
+# --- Proxy for WebSocket /ws/ai-chat ---
+@app.websocket("/ws/ai-chat")
+async def proxy_ws(websocket: WebSocket):
+    """
+    Accept a client WebSocket and proxy messages bidirectionally to the upstream websocket
+    at RELAY_UPSTREAM/ws/ai-chat. Query params and X-API-Key are forwarded where appropriate.
     """
     await websocket.accept()
-    # Read api_key from query params first, then headers as fallback
-    api_key = websocket.query_params.get('api_key')
-    if not api_key:
-        # headers supports .get
-        api_key = websocket.headers.get('x-api-key')
+    incoming_query = dict(websocket.query_params)
+    incoming_headers = {k.lower(): v for k, v in websocket.headers.items()}
 
-    # record websocket connection metric
+    # Build upstream ws URL (ws:// or wss://)
+    parsed = urlparse(RELAY_UPSTREAM)
+    ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+    netloc = parsed.netloc
+    upstream_path = "/ws/ai-chat"
+
+    # Merge query params: preserve incoming and attach api_key if header present
+    qparams = incoming_query.copy()
+    # Prefer explicit api_key param if provided by client, else use x-api-key header
+    if "api_key" not in qparams and "x-api-key" in incoming_headers:
+        qparams["api_key"] = incoming_headers["x-api-key"]
+
+    query_string = ("?" + urlencode(qparams)) if qparams else ""
+    upstream_ws_url = urlunparse((ws_scheme, netloc, upstream_path, "", urlencode(qparams), ""))
+
+    logger.info("Proxying WS client -> upstream: %s", upstream_ws_url)
+
+    # Create connection to upstream websocket
     try:
-        observability.increment_ws_connections()
-    except Exception:
-        pass
+        async with websockets.connect(upstream_ws_url) as upstream_ws:
+            # Tasks to relay messages between client and upstream
+            async def from_upstream():
+                try:
+                    async for message in upstream_ws:
+                        # websockets lib yields str (text) or bytes
+                        if isinstance(message, (bytes, bytearray)):
+                            try:
+                                await websocket.send_bytes(message)
+                            except Exception:
+                                # client likely disconnected
+                                await upstream_ws.close()
+                                break
+                        else:
+                            try:
+                                await websocket.send_text(message)
+                            except Exception:
+                                await upstream_ws.close()
+                                break
+                except websockets.ConnectionClosed:
+                    pass
+                except Exception as e:
+                    logger.debug("Error receiving from upstream WS: %s", e)
+                finally:
+                    # ensure client closed
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
 
-    # Accept if query param matches or header matches the configured key
-    allowed_keys = {RELAY_API_KEY, 'mockkey'}
-    if api_key not in allowed_keys:
-        # send an explicit unauthorized message for debugging and close
+            async def from_client():
+                try:
+                    while True:
+                        data = await websocket.receive()
+                        t = data.get("type")
+                        if t == "websocket.disconnect":
+                            # client requested disconnect
+                            try:
+                                await upstream_ws.close()
+                            except Exception:
+                                pass
+                            break
+                        if "text" in data and data["text"] is not None:
+                            try:
+                                await upstream_ws.send(data["text"])
+                            except Exception:
+                                break
+                        elif "bytes" in data and data["bytes"] is not None:
+                            try:
+                                await upstream_ws.send(data["bytes"])
+                            except Exception:
+                                break
+                except WebSocketDisconnect:
+                    try:
+                        await upstream_ws.close()
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.debug("Error receiving from client WS: %s", e)
+                    try:
+                        await upstream_ws.close()
+                    except Exception:
+                        pass
+
+            await asyncio.gather(from_upstream(), from_client())
+    except Exception as e:
+        logger.warning("Failed to connect to upstream WebSocket: %s", e)
         try:
-            await websocket.send_text(json.dumps({"error": "unauthorized", "received_api_key": api_key, "expected": RELAY_API_KEY}))
+            # Inform client of failure before closing
+            await websocket.send_text(json.dumps({"type": "error", "error": "upstream_connection_failed"}))
         except Exception:
             pass
-        await websocket.close(code=1008)
-        return
-
-    try:
-        chunks = [
-            {"type": "message", "text": "Hello — I am a mock AI assistant."},
-            {"type": "message", "text": "This is chunk 2: processing results..."},
-            {"type": "message", "text": "Final chunk: done."},
-        ]
-        for c in chunks:
-            await websocket.send_text(json.dumps(c))
-            await asyncio.sleep(0.4)
-    except WebSocketDisconnect:
-        return
-    await websocket.close()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
-# Admin endpoints (in-memory)
-class CreateKeyRequest(BaseModel):
-    owner: str
-    quota_per_day: Optional[int] = None
-
-
-@app.post('/admin/create_key')
-async def admin_create_key(payload: CreateKeyRequest, x_api_key: Optional[str] = Header(None)):
-    require_master(x_api_key)
-    new_key = uuid.uuid4().hex
-    API_KEYS[new_key] = {'owner': payload.owner, 'quota_per_day': payload.quota_per_day, 'usage': {}}
-    return {'api_key': new_key, 'owner': payload.owner, 'quota_per_day': payload.quota_per_day}
-
-
-@app.get('/admin/keys')
-async def admin_list_keys(x_api_key: Optional[str] = Header(None)):
-    require_master(x_api_key)
-    out = []
-    for k, v in API_KEYS.items():
-        out.append({'key': k, 'owner': v.get('owner'), 'quota_per_day': v.get('quota_per_day')})
-    return {'keys': out}
-
-
-@app.post('/admin/update_key/{api_key}')
-async def admin_update_key(api_key: str, payload: CreateKeyRequest, x_api_key: Optional[str] = Header(None)):
-    require_master(x_api_key)
-    if api_key not in API_KEYS:
-        raise HTTPException(status_code=404, detail='not found')
-    API_KEYS[api_key]['quota_per_day'] = payload.quota_per_day
-    return {'api_key': api_key, 'quota_per_day': payload.quota_per_day}
-
-
-@app.post('/admin/delete_key/{api_key}')
-async def admin_delete_key(api_key: str, x_api_key: Optional[str] = Header(None)):
-    require_master(x_api_key)
-    API_KEYS.pop(api_key, None)
-    return {'deleted': True}
-
-
-
-@app.get('/')
+# --- Health and metrics endpoints remain local ---
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root_health():
-    return {"status": "ok"}
+    return JSONResponse(content={"status": "ok"})
 
 
-# Expose a simple /metrics endpoint for observability
-@app.get('/metrics')
-async def metrics_endpoint():
-    try:
-        text = observability.get_metrics_text()
-        return PlainTextResponse(content=text, media_type="text/plain; version=0.0.4")
-    except Exception:
-        # Don't fail overall if metrics generation has an issue
-        return PlainTextResponse(content="relay_metrics_error 1\n", media_type="text/plain")
-
-
-if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run('main:app', host='0.0.0.0', port=8001, reload=True)
+@app.get("/metrics")
+async def metrics_get():
+    text = observability.get_metrics_text()
+    return PlainTextResponse(content=text, media_type="text/plain; version=0.0.4")
