@@ -28,12 +28,10 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
 
   const formatCurrency = (n: number) => {
     const code = currencyCode || defaultCurrency;
-    // pick a locale hint for PLN vs others
     const locale = code === "PLN" ? "pl-PL" : "en-US";
     try {
       return new Intl.NumberFormat(locale, { style: "currency", currency: code }).format(Number(n || 0));
     } catch {
-      // If Intl fails (unknown currency code), fall back to simple formatting with code appended
       return `${Number(n || 0).toFixed(2)} ${code}`;
     }
   };
@@ -51,14 +49,12 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         const comp = companyRes.parsed.result[0];
         const cur = comp.currency_id;
         if (Array.isArray(cur) && cur[1]) {
-          // If the name appears to be a 3-letter ISO code, use it directly (e.g., "PLN", "USD")
           const cand = String(cur[1]).trim();
           if (/^[A-Z]{3}$/.test(cand)) {
             setCurrencyCode(cand);
             return;
           }
         }
-        // If currency_id is an id or name not in ISO form, attempt to fetch res.currency by id
         if (Array.isArray(cur) && cur[0]) {
           const curId = cur[0];
           const curPayload = {
@@ -70,13 +66,11 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
           const curRes = await postToRelay(execUrl, curPayload, apiKey, 10000);
           if (curRes.ok && curRes.parsed && curRes.parsed.success && Array.isArray(curRes.parsed.result) && curRes.parsed.result.length > 0) {
             const c = curRes.parsed.result[0];
-            // Prefer 'name' if it's an ISO code; otherwise try to infer from symbol -> map PLN symbol to PLN if possible
             if (c.name && typeof c.name === "string" && /^[A-Z]{3}$/.test(c.name.trim())) {
               setCurrencyCode(c.name.trim());
               return;
             }
             if (c.symbol && typeof c.symbol === "string") {
-              // common symbols: "zł" -> assume PLN
               const s = c.symbol.trim();
               if (s.includes("z") || s.includes("ł") || s.toLowerCase().includes("pln")) {
                 setCurrencyCode("PLN");
@@ -87,8 +81,17 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         }
       }
     } catch {
-      // ignore detection failures and keep default currency
+      // ignore detection failures
     }
+  };
+
+  const safeNumber = (v: any) => {
+    if (v === undefined || v === null || v === "") return 0;
+    if (typeof v === "number") return v;
+    // Remove common formatting (commas, spaces)
+    const cleaned = String(v).replace(/[,\s]/g, "");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : 0;
   };
 
   const fetchKPIs = async () => {
@@ -99,90 +102,117 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     setLoading(true);
     const toastId = showLoading("Fetching BI KPIs...");
     try {
-      const saleUrl = `${safeHost(relayHost)}/api/execute_method`;
+      const execUrl = `${safeHost(relayHost)}/api/execute_method`;
 
-      // Try to detect company currency first (best-effort)
-      await detectCompanyCurrency(saleUrl);
+      // Best-effort currency detection
+      await detectCompanyCurrency(execUrl);
 
-      // 1) Revenue: sum amount_total from sale.order (recent window or all completed)
-      const salePayload = {
+      // Use read_group to get monthly sales aggregates (more accurate & efficient than fetching all orders)
+      const groupPayload = {
         model: "sale.order",
-        method: "search_read",
-        args: [[["state", "in", ["sale", "done"]]]],
-        kwargs: { fields: ["amount_total", "date_order"], limit: 1000 },
+        method: "read_group",
+        args: [[["state", "in", ["sale", "done"]]], ["amount_total"], ["date_order:month"]],
+        kwargs: { lazy: false },
       };
-      const saleRes = await postToRelay(saleUrl, salePayload, apiKey, 30000);
+      const groupRes = await postToRelay(execUrl, groupPayload, apiKey, 30000);
+
       let totalRevenue = 0;
-      if (saleRes.ok && saleRes.parsed && saleRes.parsed.success && Array.isArray(saleRes.parsed.result)) {
-        for (const s of saleRes.parsed.result) {
-          totalRevenue += Number(s.amount_total || 0);
+      let monthlyTrend: Array<{ period: string; value: number }> = [];
+
+      if (groupRes.ok && groupRes.parsed && groupRes.parsed.success && Array.isArray(groupRes.parsed.result)) {
+        const groups = groupRes.parsed.result as any[];
+
+        // Sum aggregated amount fields for total revenue
+        for (const g of groups) {
+          const amount = safeNumber(g.amount_total ?? g.amount ?? g["amount_total"]);
+          totalRevenue += amount;
+          const period = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? "(period)";
+          monthlyTrend.push({ period: String(period), value: amount });
         }
+
+        // Sort by period (strings are YYYY-MM so lexical sort is chronological)
+        monthlyTrend.sort((a, b) => (a.period < b.period ? -1 : a.period > b.period ? 1 : 0));
+
+        // Keep last 12 months (or fewer)
+        const last12 = monthlyTrend.slice(-12);
+        setTrendData(last12.map((t) => ({ period: t.period, value: t.value })));
         setRevenue(formatCurrency(totalRevenue));
       } else {
-        setRevenue("-");
+        // Fallback: try to fetch a bulk list and sum as before (still robust parsing)
+        const salePayload = {
+          model: "sale.order",
+          method: "search_read",
+          args: [[["state", "in", ["sale", "done"]]]],
+          kwargs: { fields: ["amount_total", "date_order"], limit: 5000 },
+        };
+        const saleRes = await postToRelay(execUrl, salePayload, apiKey, 30000);
+        if (saleRes.ok && saleRes.parsed && saleRes.parsed.success && Array.isArray(saleRes.parsed.result)) {
+          const rows = saleRes.parsed.result as any[];
+          totalRevenue = 0;
+          const trendMap: Record<string, number> = {};
+          for (const s of rows) {
+            const amt = safeNumber(s.amount_total ?? s.amount_total);
+            totalRevenue += amt;
+            const d = s.date_order ? new Date(s.date_order) : null;
+            if (d) {
+              const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+              trendMap[key] = (trendMap[key] || 0) + amt;
+            }
+          }
+          const trendKeys = Object.keys(trendMap).sort();
+          const trend = trendKeys.slice(-12).map((k) => ({ period: k, value: Math.round((trendMap[k] || 0) * 100) / 100 }));
+          setTrendData(trend);
+          setRevenue(formatCurrency(totalRevenue));
+        } else {
+          setRevenue("-");
+          setTrendData([]);
+        }
       }
 
-      // 2) Inventory value: fetch product.product list and compute qty * list_price
+      // Inventory: sum qty_available * list_price (best-effort; may need more paging for large catalogs)
       const prodPayload = {
         model: "product.product",
         method: "search_read",
         args: [[]],
-        kwargs: { fields: ["qty_available", "list_price", "name"], limit: 500 },
+        kwargs: { fields: ["qty_available", "list_price", "name"], limit: 2000 },
       };
-      const prodRes = await postToRelay(saleUrl, prodPayload, apiKey, 30000);
+      const prodRes = await postToRelay(execUrl, prodPayload, apiKey, 30000);
       let invValue = 0;
       if (prodRes.ok && prodRes.parsed && prodRes.parsed.success && Array.isArray(prodRes.parsed.result)) {
         for (const p of prodRes.parsed.result) {
-          invValue += Number(p.qty_available || 0) * Number(p.list_price || 0);
+          const qty = safeNumber(p.qty_available ?? p.virtual_available ?? 0);
+          const price = safeNumber(p.list_price ?? p.standard_price ?? 0);
+          invValue += qty * price;
         }
         setInventoryValue(formatCurrency(invValue));
       } else {
         setInventoryValue("-");
       }
 
-      // 3) Top suppliers: read_group on purchase.order partner totals
+      // Top suppliers using read_group on purchase.order
       const purchaseGroupPayload = {
         model: "purchase.order",
         method: "read_group",
         args: [[], ["amount_total"], ["partner_id"]],
         kwargs: { lazy: false },
       };
-      const purchaseRes = await postToRelay(saleUrl, purchaseGroupPayload, apiKey, 30000);
+      const purchaseRes = await postToRelay(execUrl, purchaseGroupPayload, apiKey, 30000);
       const top: KV[] = [];
       if (purchaseRes.ok && purchaseRes.parsed && Array.isArray(purchaseRes.parsed.result)) {
         const groups = purchaseRes.parsed.result as any[];
-        // Normalize and sort by amount_total
         const norm = groups
           .map((g) => {
             const partner = Array.isArray(g.partner_id) ? g.partner_id[1] : String(g.partner_id || "");
-            const amount = Number(g.amount_total || 0);
+            const amount = safeNumber(g.amount_total || g.amount);
             return { partner, amount };
           })
           .sort((a, b) => b.amount - a.amount)
           .slice(0, 5);
         for (const n of norm) {
-          top.push({ title: n.partner, value: formatCurrency(n.amount) });
-        }
-        setTopSuppliers(top);
-      } else {
-        setTopSuppliers([]);
-      }
-
-      // 4) Trend: produce simple monthly revenue trend from saleRes if available
-      const trendMap: Record<string, number> = {};
-      if (saleRes.ok && saleRes.parsed && saleRes.parsed.success && Array.isArray(saleRes.parsed.result)) {
-        for (const s of saleRes.parsed.result) {
-          const d = s.date_order ? new Date(s.date_order) : null;
-          if (!d) continue;
-          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-          trendMap[key] = (trendMap[key] || 0) + Number(s.amount_total || 0);
+          top.push({ title: n.partner || "(unknown)", value: formatCurrency(n.amount) });
         }
       }
-      const trend = Object.keys(trendMap)
-        .sort()
-        .slice(-12)
-        .map((k) => ({ period: k, value: Math.round((trendMap[k] || 0) * 100) / 100 }));
-      setTrendData(trend);
+      setTopSuppliers(top);
 
       showSuccess("BI KPIs loaded.");
     } catch (err: any) {
