@@ -112,8 +112,27 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
         const execUrl = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
         const r = await postToRelay(execUrl, interpretedPayload, apiKey, 30000);
         if (r.ok && r.parsed && r.parsed.success) {
-          const resultText = typeof r.parsed.result === "string" ? r.parsed.result : JSON.stringify(r.parsed.result, null, 2);
-          pushAssistant(resultText);
+          const res = r.parsed.result;
+          // If this looks like an employee list, produce a friendly summary instead of raw JSON
+          let assistantText = "";
+          try {
+            const modelName = interpretedPayload?.model ?? "";
+            const looksLikeEmployeeArray =
+              Array.isArray(res) &&
+              res.length > 0 &&
+              typeof res[0] === "object" &&
+              (Object.prototype.hasOwnProperty.call(res[0], "name") || Object.prototype.hasOwnProperty.call(res[0], "work_email"));
+
+            if (modelName === "hr.employee" || looksLikeEmployeeArray) {
+              assistantText = openaiKey ? await summarizeEmployeesWithAI(openaiKey, res) : formatEmployeeSummary(res);
+            } else {
+              assistantText = typeof res === "string" ? res : JSON.stringify(res, null, 2);
+            }
+          } catch {
+            assistantText = typeof res === "string" ? res : JSON.stringify(res, null, 2);
+          }
+
+          pushAssistant(assistantText);
           showSuccess("Executed interpreted payload successfully.");
         } else {
           const errTxt = (r.parsed && (r.parsed.error || r.parsed.message)) || r.text || `HTTP ${r.status}`;
