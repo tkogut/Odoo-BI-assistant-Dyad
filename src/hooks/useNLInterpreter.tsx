@@ -12,9 +12,10 @@ import { useMemo } from "react";
  *  - sales aggregation (read_group on sale.order)
  *  - dashboard generation (ask ai.assistant.generate_dashboard)
  *  - fallback to ai.assistant.query
+ *  - top customer by turnover (read_group grouping by partner_id)
  */
 
-export type NLIntentType = "search_employee" | "sales_analysis" | "generate_dashboard" | "ai_assistant";
+export type NLIntentType = "search_employee" | "sales_analysis" | "generate_dashboard" | "ai_assistant" | "top_customer";
 
 export type NLInterpretation =
   | {
@@ -40,6 +41,16 @@ export type NLInterpretation =
   | {
       type: "ai_assistant";
       payload: { model: "ai.assistant"; method: string; args: any[]; kwargs?: any };
+      description: string;
+    }
+  | {
+      type: "top_customer";
+      payload: {
+        model: "sale.order";
+        method: "read_group";
+        args: any[];
+        kwargs?: Record<string, any>;
+      };
       description: string;
     };
 
@@ -95,6 +106,31 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
       description: dept
         ? `Search employees for name="${name ?? "(any)"}" in department="${dept}" via /api/search_employee (preferred)`
         : `Search employees for "${name ?? "(any)"}" via /api/search_employee (preferred)`,
+    };
+  }
+
+  // Top customer / highest turnover heuristics
+  if (/\b(top customer|top client|highest turnover|highest revenue|highest sales|largest customer|biggest customer|most revenue)\b/.test(lower) || (/\b(company|customer|client)\b/.test(lower) && /\b(highest|top|largest|biggest)\b/.test(lower))) {
+    const period = year ? ` for ${year}` : "";
+    // Base domain: confirmed sales orders
+    const domain: any[] = [["state", "in", ["sale", "done"]]];
+    if (year) {
+      domain.push(["date_order", ">=", `${year}-01-01`]);
+      domain.push(["date_order", "<=", `${year}-12-31`]);
+    }
+
+    // Group by partner_id and aggregate amount_total
+    const payload = {
+      model: "sale.order",
+      method: "read_group",
+      args: [domain, ["amount_total", "partner_id"], ["partner_id"]],
+      kwargs: { lazy: false },
+    };
+
+    return {
+      type: "top_customer",
+      payload,
+      description: `Find top customer by turnover${period}`,
     };
   }
 

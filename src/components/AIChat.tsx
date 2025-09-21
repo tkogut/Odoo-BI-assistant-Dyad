@@ -161,6 +161,40 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
         return;
       }
 
+      // TOP CUSTOMER: group by partner_id and select the highest turnover
+      if ((interp as any).type === "top_customer") {
+        const url = `${relayHost.replace(/\/$/, "")}/api/execute_method`;
+        const r = await postToRelay(url, interp.payload, apiKey, 20000);
+        if (r.ok && r.parsed && r.parsed.success) {
+          const groups = r.parsed.result || [];
+          if (Array.isArray(groups) && groups.length > 0) {
+            // Each group should contain partner_id (array [id, name]) and amount_total (sum)
+            let top = groups[0];
+            for (const g of groups) {
+              const a = Number(g.amount_total ?? g.amount ?? 0);
+              const b = Number(top.amount_total ?? top.amount ?? 0);
+              if (a > b) top = g;
+            }
+
+            const partner = top.partner_id && Array.isArray(top.partner_id) ? (top.partner_id[1] ?? String(top.partner_id[0])) : top.partner_id ?? "Unknown";
+            const amount = Number(top.amount_total ?? top.amount ?? 0);
+            const orders = top.__count ?? top.count ?? null;
+            const amountStr = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+            const ordersStr = orders !== null ? ` with ${orders} orders` : "";
+            pushAssistant(`Top customer${ordersStr} in the requested period: ${partner} — total turnover ${amountStr}.`);
+            showSuccess("Top customer determined from Odoo data.");
+          } else {
+            pushAssistant("No grouped sales data returned to determine top customer.");
+            showError("No grouped sales data returned.");
+          }
+        } else {
+          const errTxt = (r.parsed && (r.parsed.error || r.parsed.message)) || r.text || `HTTP ${r.status}`;
+          pushAssistant(`Failed to get top customer: ${String(errTxt).slice(0, 500)}`);
+          showError(`Top customer query failed: ${String(errTxt).slice(0, 400)}`);
+        }
+        return;
+      }
+
       // Employee search flow (department-aware)
       if (interp.type === "search_employee") {
         const name = (interp.payload as any).name ?? undefined;
