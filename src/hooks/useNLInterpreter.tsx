@@ -12,8 +12,9 @@ import { useMemo } from "react";
  *  - sales aggregation (read_group on sale.order)
  *  - dashboard generation (ask ai.assistant.generate_dashboard)
  *  - fallback to ai.assistant.query
- *  - top customer by turnover (res.partner search_read preferred)
- *  - inventory / financial / purchase analyses (BI patterns)
+ *  - top_customer (prefer read_group aggregation by partner)
+ *  - product_performance (best-selling products via sale.order.line read_group)
+ *  - supplier_performance (purchase.order read_group)
  */
 
 export type NLIntentType =
@@ -24,7 +25,9 @@ export type NLIntentType =
   | "top_customer"
   | "inventory_analysis"
   | "financial_analysis"
-  | "purchase_analysis";
+  | "purchase_analysis"
+  | "product_performance"
+  | "supplier_performance";
 
 export type NLInterpretation =
   | {
@@ -91,6 +94,26 @@ export type NLInterpretation =
         kwargs?: Record<string, any>;
       };
       description: string;
+    }
+  | {
+      type: "product_performance";
+      payload: {
+        model: string;
+        method: string;
+        args: any[];
+        kwargs?: Record<string, any>;
+      };
+      description: string;
+    }
+  | {
+      type: "supplier_performance";
+      payload: {
+        model: string;
+        method: string;
+        args: any[];
+        kwargs?: Record<string, any>;
+      };
+      description: string;
     };
 
 /** naive name extractor: looks for "search for NAME" or "find NAME" patterns first */
@@ -147,29 +170,31 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
     };
   }
 
-  // Top customer / highest turnover heuristics
-  if (/\b(top customer|top client|highest turnover|highest revenue|highest sales|largest customer|biggest customer|most revenue)\b/.test(lower) || (/\b(company|customer|client)\b/.test(lower) && /\b(highest|top|largest|biggest)\b/.test(lower))) {
-    const period = year ? ` for ${year}` : "";
+  // Top customer / highest turnover heuristics — prefer aggregation when user mentions revenue/rank
+  if (/\b(top customer|top client|highest turnover|highest revenue|highest sales|largest customer|biggest customer|most revenue|rank|top 10)\b/.test(lower) || (/\b(customer|client)\b/.test(lower) && /\b(highest|top|largest|biggest)\b/.test(lower))) {
+    const periodStart = year ? `${year}-01-01` : undefined;
+    const periodEnd = year ? `${year}-12-31` : undefined;
+    const domain: any[] = [["state", "in", ["sale", "done"]]];
+    if (periodStart && periodEnd) {
+      domain.push(["date_order", ">=", periodStart]);
+      domain.push(["date_order", "<=", periodEnd]);
+    }
     const payload = {
-      model: "res.partner",
-      method: "search_read",
-      args: [[["customer_rank", ">", 0]]],
-      kwargs: {
-        fields: ["id", "name", "total_invoiced", "email", "phone"],
-        order: "total_invoiced desc",
-        limit: 5,
-      },
+      model: "sale.order",
+      method: "read_group",
+      args: [domain, ["amount_total"], ["partner_id"]],
+      kwargs: { lazy: false, orderby: "amount_total desc", limit: 10 },
     };
 
     return {
       type: "top_customer",
       payload,
-      description: `Find top 5 customers by total_invoiced${period} using res.partner.search_read`,
+      description: `Top customers by revenue${year ? ` for ${year}` : ""} (aggregated via sale.order.read_group).`,
     };
   }
 
   // Sales analysis heuristics
-  if (/\b(sales|revenue|monthly sales|orders|average order|top customers|avg order|order value)\b/.test(lower)) {
+  if (/\b(sales|revenue|monthly sales|orders|average order|top customers|avg order|order value|trend)\b/.test(lower)) {
     const period = /\b(month|monthly)\b/.test(lower) ? "month" : /\b(year|annual)\b/.test(lower) ? "year" : "month";
 
     const domain: any[] = [["state", "in", ["sale", "done"]]];
@@ -197,6 +222,23 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
     };
   }
 
+  // Product performance / best-selling products heuristics
+  if (/\b(best-?selling|best sellers|top products|top selling|selling products|most sold)\b/.test(lower)) {
+    const limitMatch = cleaned.match(/\btop\s+(\d{1,2})\b/);
+    const limit = limitMatch ? Number(limitMatch[1]) : 10;
+    const payload = {
+      model: "sale.order.line",
+      method: "read_group",
+      args: [[], ["product_uom_qty", "price_subtotal"], ["product_id"]],
+      kwargs: { lazy: false, orderby: "product_uom_qty desc", limit },
+    };
+    return {
+      type: "product_performance",
+      payload,
+      description: `Best-selling products (group by product_id) limited to ${limit}.`,
+    };
+  }
+
   // Inventory / stock heuristics
   if (/\b(stock|inventory|inventory levels|low stock|out of stock|reorder|warehouse)\b/.test(lower)) {
     // If user mentions low/threshold try to include a threshold hint
@@ -215,6 +257,21 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
       type: "inventory_analysis",
       payload,
       description: threshold ? `Find products with qty_available < ${threshold}` : "List products and inventory levels",
+    };
+  }
+
+  // Supplier / purchase heuristics (supplier performance)
+  if (/\b(supplier performance|supplier|vendor performance|top suppliers|best suppliers)\b/.test(lower)) {
+    const payload = {
+      model: "purchase.order",
+      method: "read_group",
+      args: [[], ["amount_total"], ["partner_id"]],
+      kwargs: { lazy: false, orderby: "amount_total desc", limit: 10 },
+    };
+    return {
+      type: "supplier_performance",
+      payload,
+      description: "Aggregate purchases by supplier (purchase.order.read_group)",
     };
   }
 
@@ -239,28 +296,6 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
       type: "financial_analysis",
       payload,
       description: `Aggregate accounting moves by ${period}${year ? ` for ${year}` : ""}`,
-    };
-  }
-
-  // Purchase / supplier heuristics
-  if (/\b(purchase|supplier|procurement|purchases|supplier performance|purchase orders)\b/.test(lower)) {
-    const domain: any[] = [];
-    if (year) {
-      domain.push(["date_order", ">=", `${year}-01-01`]);
-      domain.push(["date_order", "<=", `${year}-12-31`]);
-    }
-
-    const payload = {
-      model: "purchase.order",
-      method: "read_group",
-      args: [domain, ["amount_total"], ["partner_id"]],
-      kwargs: { lazy: false },
-    };
-
-    return {
-      type: "purchase_analysis",
-      payload,
-      description: `Aggregate purchase orders by supplier${year ? ` for ${year}` : ""}`,
     };
   }
 

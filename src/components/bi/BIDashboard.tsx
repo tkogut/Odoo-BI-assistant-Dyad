@@ -21,6 +21,8 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [revenue, setRevenue] = useState<string>("-");
   const [inventoryValue, setInventoryValue] = useState<string>("-");
   const [topSuppliers, setTopSuppliers] = useState<KV[]>([]);
+  const [topCustomers, setTopCustomers] = useState<KV[]>([]);
+  const [bestProducts, setBestProducts] = useState<KV[]>([]);
   const [trendData, setTrendData] = useState<Array<Record<string, any>>>([]);
   const [currencyCode, setCurrencyCode] = useState<string>(defaultCurrency);
 
@@ -34,6 +36,14 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     } catch {
       return `${Number(n || 0).toFixed(2)} ${code}`;
     }
+  };
+
+  const safeNumber = (v: any) => {
+    if (v === undefined || v === null || v === "") return 0;
+    if (typeof v === "number") return v;
+    const cleaned = String(v).replace(/[,\s]/g, "");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : 0;
   };
 
   const detectCompanyCurrency = async (execUrl: string) => {
@@ -55,43 +65,10 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
             return;
           }
         }
-        if (Array.isArray(cur) && cur[0]) {
-          const curId = cur[0];
-          const curPayload = {
-            model: "res.currency",
-            method: "search_read",
-            args: [[["id", "=", curId]]],
-            kwargs: { fields: ["name", "symbol"], limit: 1 },
-          };
-          const curRes = await postToRelay(execUrl, curPayload, apiKey, 10000);
-          if (curRes.ok && curRes.parsed && curRes.parsed.success && Array.isArray(curRes.parsed.result) && curRes.parsed.result.length > 0) {
-            const c = curRes.parsed.result[0];
-            if (c.name && typeof c.name === "string" && /^[A-Z]{3}$/.test(c.name.trim())) {
-              setCurrencyCode(c.name.trim());
-              return;
-            }
-            if (c.symbol && typeof c.symbol === "string") {
-              const s = c.symbol.trim();
-              if (s.includes("z") || s.includes("ł") || s.toLowerCase().includes("pln")) {
-                setCurrencyCode("PLN");
-                return;
-              }
-            }
-          }
-        }
       }
     } catch {
       // ignore detection failures
     }
-  };
-
-  const safeNumber = (v: any) => {
-    if (v === undefined || v === null || v === "") return 0;
-    if (typeof v === "number") return v;
-    // Remove common formatting (commas, spaces)
-    const cleaned = String(v).replace(/[,\s]/g, "");
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : 0;
   };
 
   const fetchKPIs = async () => {
@@ -104,10 +81,9 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     try {
       const execUrl = `${safeHost(relayHost)}/api/execute_method`;
 
-      // Best-effort currency detection
       await detectCompanyCurrency(execUrl);
 
-      // Use read_group to get monthly sales aggregates (more accurate & efficient than fetching all orders)
+      // monthly revenue via read_group
       const groupPayload = {
         model: "sale.order",
         method: "read_group",
@@ -121,55 +97,22 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
 
       if (groupRes.ok && groupRes.parsed && groupRes.parsed.success && Array.isArray(groupRes.parsed.result)) {
         const groups = groupRes.parsed.result as any[];
-
-        // Sum aggregated amount fields for total revenue
         for (const g of groups) {
           const amount = safeNumber(g.amount_total ?? g.amount ?? g["amount_total"]);
           totalRevenue += amount;
           const period = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? "(period)";
           monthlyTrend.push({ period: String(period), value: amount });
         }
-
-        // Sort by period (strings are YYYY-MM so lexical sort is chronological)
         monthlyTrend.sort((a, b) => (a.period < b.period ? -1 : a.period > b.period ? 1 : 0));
-
-        // Keep last 12 months (or fewer)
         const last12 = monthlyTrend.slice(-12);
         setTrendData(last12.map((t) => ({ period: t.period, value: t.value })));
         setRevenue(formatCurrency(totalRevenue));
       } else {
-        // Fallback: try to fetch a bulk list and sum as before (still robust parsing)
-        const salePayload = {
-          model: "sale.order",
-          method: "search_read",
-          args: [[["state", "in", ["sale", "done"]]]],
-          kwargs: { fields: ["amount_total", "date_order"], limit: 5000 },
-        };
-        const saleRes = await postToRelay(execUrl, salePayload, apiKey, 30000);
-        if (saleRes.ok && saleRes.parsed && saleRes.parsed.success && Array.isArray(saleRes.parsed.result)) {
-          const rows = saleRes.parsed.result as any[];
-          totalRevenue = 0;
-          const trendMap: Record<string, number> = {};
-          for (const s of rows) {
-            const amt = safeNumber(s.amount_total ?? s.amount_total);
-            totalRevenue += amt;
-            const d = s.date_order ? new Date(s.date_order) : null;
-            if (d) {
-              const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-              trendMap[key] = (trendMap[key] || 0) + amt;
-            }
-          }
-          const trendKeys = Object.keys(trendMap).sort();
-          const trend = trendKeys.slice(-12).map((k) => ({ period: k, value: Math.round((trendMap[k] || 0) * 100) / 100 }));
-          setTrendData(trend);
-          setRevenue(formatCurrency(totalRevenue));
-        } else {
-          setRevenue("-");
-          setTrendData([]);
-        }
+        setRevenue("-");
+        setTrendData([]);
       }
 
-      // Inventory: sum qty_available * list_price (best-effort; may need more paging for large catalogs)
+      // Inventory estimate
       const prodPayload = {
         model: "product.product",
         method: "search_read",
@@ -189,7 +132,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         setInventoryValue("-");
       }
 
-      // Top suppliers using read_group on purchase.order
+      // Top suppliers
       const purchaseGroupPayload = {
         model: "purchase.order",
         method: "read_group",
@@ -197,7 +140,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         kwargs: { lazy: false },
       };
       const purchaseRes = await postToRelay(execUrl, purchaseGroupPayload, apiKey, 30000);
-      const top: KV[] = [];
+      const topSup: KV[] = [];
       if (purchaseRes.ok && purchaseRes.parsed && Array.isArray(purchaseRes.parsed.result)) {
         const groups = purchaseRes.parsed.result as any[];
         const norm = groups
@@ -209,10 +152,10 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
           .sort((a, b) => b.amount - a.amount)
           .slice(0, 5);
         for (const n of norm) {
-          top.push({ title: n.partner || "(unknown)", value: formatCurrency(n.amount) });
+          topSup.push({ title: n.partner || "(unknown)", value: formatCurrency(n.amount) });
         }
       }
-      setTopSuppliers(top);
+      setTopSuppliers(topSup);
 
       showSuccess("BI KPIs loaded.");
     } catch (err: any) {
@@ -220,6 +163,78 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     } finally {
       dismissToast(toastId);
       setLoading(false);
+    }
+  };
+
+  const fetchTopCustomers = async (limit = 10) => {
+    if (!relayHost) {
+      showError("Please configure a Relay Host in Settings.");
+      return;
+    }
+    const toastId = showLoading("Fetching top customers...");
+    try {
+      const execUrl = `${safeHost(relayHost)}/api/execute_method`;
+      const payload = {
+        model: "sale.order",
+        method: "read_group",
+        args: [[["state", "in", ["sale", "done"]]], ["amount_total"], ["partner_id"]],
+        kwargs: { lazy: false, orderby: "amount_total desc", limit },
+      };
+      const res = await postToRelay(execUrl, payload, apiKey, 30000);
+      const out: KV[] = [];
+      if (res.ok && res.parsed && Array.isArray(res.parsed.result)) {
+        const groups = res.parsed.result as any[];
+        // groups usually have partner_id as [id, name] or key fields
+        // normalize by partner name when available
+        for (const g of groups.slice(0, limit)) {
+          const partner = Array.isArray(g.partner_id) ? g.partner_id[1] : g.partner_id ?? "(unknown)";
+          const amount = safeNumber(g.amount_total ?? g.amount ?? 0);
+          out.push({ title: String(partner), value: formatCurrency(amount) });
+        }
+        setTopCustomers(out);
+        showSuccess(`Loaded top ${out.length} customers.`);
+      } else {
+        showError("Top customers query failed.");
+      }
+    } catch (err: any) {
+      showError(err?.message || String(err));
+    } finally {
+      dismissToast(toastId);
+    }
+  };
+
+  const fetchBestProducts = async (limit = 10) => {
+    if (!relayHost) {
+      showError("Please configure a Relay Host in Settings.");
+      return;
+    }
+    const toastId = showLoading("Fetching best-selling products...");
+    try {
+      const execUrl = `${safeHost(relayHost)}/api/execute_method`;
+      const payload = {
+        model: "sale.order.line",
+        method: "read_group",
+        args: [[], ["product_uom_qty", "price_subtotal"], ["product_id"]],
+        kwargs: { lazy: false, orderby: "product_uom_qty desc", limit },
+      };
+      const res = await postToRelay(execUrl, payload, apiKey, 30000);
+      const out: KV[] = [];
+      if (res.ok && res.parsed && Array.isArray(res.parsed.result)) {
+        const groups = res.parsed.result as any[];
+        for (const g of groups.slice(0, limit)) {
+          const p = Array.isArray(g.product_id) ? g.product_id[1] : g.product_id ?? "(unknown)";
+          const qty = safeNumber(g.product_uom_qty ?? 0);
+          out.push({ title: String(p), value: `${qty.toFixed(0)} units` });
+        }
+        setBestProducts(out);
+        showSuccess(`Loaded ${out.length} best-selling products.`);
+      } else {
+        showError("Best-selling products query failed.");
+      }
+    } catch (err: any) {
+      showError(err?.message || String(err));
+    } finally {
+      dismissToast(toastId);
     }
   };
 
@@ -239,8 +254,13 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         <KPICard title="Total Revenue" value={revenue} subtitle={`Sum of completed sales orders (${currencyCode})`} loading={loading} />
         <KPICard title="Inventory Value" value={inventoryValue} subtitle={`Estimated stock value (${currencyCode})`} loading={loading} />
         <div>
-          <div className="p-4 border rounded">
-            <div className="text-sm font-medium mb-2">Top Suppliers</div>
+          <div className="p-4 border rounded space-y-3">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium">Top Suppliers</div>
+              <div className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => { /* no-op for now */ }}>Refresh</Button>
+              </div>
+            </div>
             {topSuppliers.length === 0 ? (
               <div className="text-sm text-muted-foreground">No suppliers listed</div>
             ) : (
@@ -255,8 +275,51 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         </div>
       </div>
 
-      <div>
-        <ChartWidget title="Revenue Trend (monthly)" type="line" data={trendData} xKey="period" yKey="value" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="p-4 border rounded space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium">Top Customers</div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => fetchTopCustomers(5)}>Top 5</Button>
+              <Button size="sm" variant="ghost" onClick={() => fetchTopCustomers(10)}>Top 10</Button>
+            </div>
+          </div>
+          {topCustomers.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No data. Click Top 5 or Top 10.</div>
+          ) : (
+            topCustomers.map((c, i) => (
+              <div key={i} className="flex items-center justify-between py-1">
+                <div className="text-sm">{c.title}</div>
+                <div className="text-sm font-medium">{c.value}</div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="p-4 border rounded space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium">Best-selling Products</div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => fetchBestProducts(5)}>Top 5</Button>
+              <Button size="sm" variant="ghost" onClick={() => fetchBestProducts(10)}>Top 10</Button>
+            </div>
+          </div>
+          {bestProducts.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No data. Click Top 5 or Top 10.</div>
+          ) : (
+            bestProducts.map((p, i) => (
+              <div key={i} className="flex items-center justify-between py-1">
+                <div className="text-sm">{p.title}</div>
+                <div className="text-sm font-medium">{p.value}</div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="p-4 border rounded">
+          <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
+          <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
+        </div>
       </div>
     </div>
   );
