@@ -12,6 +12,7 @@ import CompanyList from "@/components/CompanyList";
 import ModelExplorer from "@/components/ModelExplorer";
 import BIDashboard from "@/components/bi/BIDashboard";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
+import TotalRevenueCommand from "@/components/TotalRevenueCommand";
 
 const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "http://localhost:8000";
 const DEFAULT_API_KEY = (import.meta.env.VITE_RELAY_API_KEY as string) ?? "super_rooster";
@@ -104,6 +105,7 @@ const Index: React.FC = () => {
                 <BIDashboard relayHost={relayHost} apiKey={apiKey} />
                 <ModelExplorer relayHost={relayHost} apiKey={apiKey} />
                 <CompanyList relayHost={relayHost} apiKey={apiKey} />
+                <TotalRevenueCommand relayHost={relayHost} apiKey={apiKey} />
                 <EmployeeSearch relayHost={relayHost} apiKey={apiKey} />
               </aside>
             </div>
