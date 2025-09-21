@@ -1,3 +1,4 @@
+JSON-RPC interpreter with richer system prompt and validation.">
 "use client";
 
 export async function interpretWithOpenAI(openaiKey: string | undefined, userText: string) {
@@ -5,28 +6,51 @@ export async function interpretWithOpenAI(openaiKey: string | undefined, userTex
     throw new Error("No OpenAI API key provided");
   }
 
-  const systemPrompt = `
-You are a translator from natural language to a JSON-RPC payload for an Odoo-style relay.
-Only output valid JSON (no extra text). The JSON must contain the keys:
-  - "model" (string)
-  - "method" (string)
-  - "args" (array)
-  - "kwargs" (object)
+  const ENHANCED_SYSTEM_PROMPT = `You are an expert Odoo ERP consultant. Convert natural language to JSON-RPC calls using these models:
+
+CORE MODELS & FIELDS:
+• res.partner: Companies/customers (name, total_invoiced, customer_rank, supplier_rank, is_company)
+• sale.order: Sales orders (name, partner_id, amount_total, date_order, state)
+• account.move: Invoices/accounting (name, partner_id, amount_total, invoice_date, move_type)
+• product.product: Products (name, default_code, list_price, qty_available, categ_id)
+• purchase.order: Purchase orders (name, partner_id, amount_total, date_order)
+• hr.employee: Employees (name, work_email, department_id, job_title)
+• stock.quant: Inventory levels (product_id, quantity, location_id)
+
+QUERY PATTERNS:
+• "highest turnover/revenue" → res.partner with total_invoiced desc
+• "top customers" → res.partner where customer_rank > 0, order by total_invoiced desc
+• "low stock products" → product.product where qty_available < threshold
+• "recent orders" → sale.order order by date_order desc
+• "sales by month" → sale.order read_group by date_order:month
+• "best selling products" → sale.order.line read_group by product_id
+
+REQUIREMENTS:
+- ONLY output valid JSON (no extra commentary).
+- JSON must be an object with keys:
+  - model (string)
+  - method (string)
+  - args (array)
+  - kwargs (object)
+- Use Odoo domain and kwargs conventions (e.g. args: [[["field","operator",value]]], kwargs: {fields: [...], limit: N, order: "field desc"})
+- When the user asks for a period or year (e.g., '2024' or 'this month'), include date bounds using date fields where appropriate (date_order, invoice_date).
+- Prefer using read_group for grouped/aggregated queries and search_read for listing queries.
+
+If you cannot map the query to a specific model/method, return {"error":"explanation"}.
 
 Example:
 Q: List recent sales orders this month.
 A: {"model":"sale.order","method":"search_read","args":[[["date_order",">=","2025-09-01"]]],"kwargs":{"fields":["id","name","amount_total"]}}
 
-If you cannot map the query to a specific model/method, return an object with an "error" key explaining why: {"error":"explanation"}
-`;
+Output only the JSON object (no markdown, no backticks).`;
 
   const messages = [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: ENHANCED_SYSTEM_PROMPT },
     { role: "user", content: userText },
   ];
 
   const body = {
-    model: "gpt-3.5-turbo",
+    model: "gpt-4",
     messages,
     temperature: 0.0,
     max_tokens: 800,
@@ -53,18 +77,20 @@ If you cannot map the query to a specific model/method, return an object with an
     throw new Error("OpenAI returned an unexpected response");
   }
 
-  // Attempt to extract JSON object from assistant text (strip surrounding triple-backticks etc.)
+  // Normalize assistant text to try to extract only the JSON object
   let jsonText = content.trim();
 
   // Remove code fences if present
   if (jsonText.startsWith("```")) {
     const fenceEnd = jsonText.lastIndexOf("```");
     if (fenceEnd > 3) {
-      jsonText = jsonText.slice(jsonText.indexOf("\n") + 1, fenceEnd).trim();
+      // drop the opening line if it contains a language token
+      const firstNewline = jsonText.indexOf("\n");
+      jsonText = jsonText.slice(firstNewline + 1, fenceEnd).trim();
     }
   }
 
-  // Find first { and last } to grab JSON object if assistant added commentary
+  // Extract first {...} object if assistant added commentary
   const firstBrace = jsonText.indexOf("{");
   const lastBrace = jsonText.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
@@ -78,7 +104,7 @@ If you cannot map the query to a specific model/method, return an object with an
     throw new Error("OpenAI returned non-JSON or malformed JSON: " + (err?.message || String(err)));
   }
 
-  // If assistant explicitly returned error object, forward that as rejection
+  // If assistant explicitly returned error object, throw that as an error
   if (parsed && typeof parsed === "object" && parsed.error) {
     throw new Error(String(parsed.error));
   }
@@ -92,7 +118,9 @@ If you cannot map the query to a specific model/method, return an object with an
     typeof parsed.kwargs !== "object" ||
     Array.isArray(parsed.kwargs)
   ) {
-    throw new Error("Parsed JSON missing required keys or wrong types (expect: model:string, method:string, args:array, kwargs:object).");
+    throw new Error(
+      "Parsed JSON missing required keys or wrong types (expect: model:string, method:string, args:array, kwargs:object).",
+    );
   }
 
   return {
