@@ -6,7 +6,6 @@ import { MadeWithDyad } from "@/components/made-with-dyad";
 import { useLocalStorage } from "@/hooks/useLocalStorage";
 import ThemeToggle from "@/components/ThemeToggle";
 import AIChat from "@/components/AIChat";
-import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 import EmployeeSearch from "@/components/EmployeeSearch";
 import CompanyList from "@/components/CompanyList";
 import ModelExplorer from "@/components/ModelExplorer";
@@ -98,7 +97,6 @@ const Index: React.FC = () => {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
               <div className="lg:col-span-2 w-full space-y-4">
                 <AIChat relayHost={relayHost} apiKey={apiKey} relayReachable={relayReachable} />
-                <AIDashboardGenerator relayHost={relayHost} apiKey={apiKey} />
               </div>
 
               <aside className="w-full space-y-4">
