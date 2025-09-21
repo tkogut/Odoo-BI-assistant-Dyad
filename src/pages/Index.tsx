@@ -10,6 +10,7 @@ import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 import EmployeeSearch from "@/components/EmployeeSearch";
 import CompanyList from "@/components/CompanyList";
 import ModelExplorer from "@/components/ModelExplorer";
+import BIDashboard from "@/components/bi/BIDashboard";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 
 const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "http://localhost:8000";
@@ -93,17 +94,18 @@ const Index: React.FC = () => {
 
         <main className="space-y-8">
           <section>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-              <div className="w-full">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+              <div className="lg:col-span-2 w-full space-y-4">
                 <AIChat relayHost={relayHost} apiKey={apiKey} relayReachable={relayReachable} />
+                <AIDashboardGenerator relayHost={relayHost} apiKey={apiKey} />
               </div>
 
-              <div className="w-full space-y-4">
-                <AIDashboardGenerator relayHost={relayHost} apiKey={apiKey} />
+              <aside className="w-full space-y-4">
+                <BIDashboard relayHost={relayHost} apiKey={apiKey} />
                 <ModelExplorer relayHost={relayHost} apiKey={apiKey} />
                 <CompanyList relayHost={relayHost} apiKey={apiKey} />
                 <EmployeeSearch relayHost={relayHost} apiKey={apiKey} />
-              </div>
+              </aside>
             </div>
           </section>
         </main>

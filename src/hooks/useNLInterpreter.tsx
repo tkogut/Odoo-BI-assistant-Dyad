@@ -13,9 +13,18 @@ import { useMemo } from "react";
  *  - dashboard generation (ask ai.assistant.generate_dashboard)
  *  - fallback to ai.assistant.query
  *  - top customer by turnover (res.partner search_read preferred)
+ *  - inventory / financial / purchase analyses (BI patterns)
  */
 
-export type NLIntentType = "search_employee" | "sales_analysis" | "generate_dashboard" | "ai_assistant" | "top_customer";
+export type NLIntentType =
+  | "search_employee"
+  | "sales_analysis"
+  | "generate_dashboard"
+  | "ai_assistant"
+  | "top_customer"
+  | "inventory_analysis"
+  | "financial_analysis"
+  | "purchase_analysis";
 
 export type NLInterpretation =
   | {
@@ -52,6 +61,36 @@ export type NLInterpretation =
         kwargs?: Record<string, any>;
       };
       description: string;
+    }
+  | {
+      type: "inventory_analysis";
+      payload: {
+        model: string;
+        method: string;
+        args: any[];
+        kwargs?: Record<string, any>;
+      };
+      description: string;
+    }
+  | {
+      type: "financial_analysis";
+      payload: {
+        model: string;
+        method: string;
+        args: any[];
+        kwargs?: Record<string, any>;
+      };
+      description: string;
+    }
+  | {
+      type: "purchase_analysis";
+      payload: {
+        model: string;
+        method: string;
+        args: any[];
+        kwargs?: Record<string, any>;
+      };
+      description: string;
     };
 
 /** naive name extractor: looks for "search for NAME" or "find NAME" patterns first */
@@ -76,7 +115,6 @@ function extractDepartmentFromText(text: string): string | null {
   const m = cleaned.match(inRe);
   if (m && m[2]) return m[2].trim();
 
-  // Try "<dept> department" standalone
   const deptRe = /\b([A-Za-zĄĆĘŁŃÓŚŹŻażćęłńóśźż'\-\s]{2,}?)\s+(?:department|dept|team)\b/i;
   const m2 = cleaned.match(deptRe);
   if (m2 && m2[1]) return m2[1].trim();
@@ -112,7 +150,6 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
   // Top customer / highest turnover heuristics
   if (/\b(top customer|top client|highest turnover|highest revenue|highest sales|largest customer|biggest customer|most revenue)\b/.test(lower) || (/\b(company|customer|client)\b/.test(lower) && /\b(highest|top|largest|biggest)\b/.test(lower))) {
     const period = year ? ` for ${year}` : "";
-    // Prefer a direct res.partner search_read on total_invoiced to avoid grouping ambiguity
     const payload = {
       model: "res.partner",
       method: "search_read",
@@ -135,10 +172,8 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
   if (/\b(sales|revenue|monthly sales|orders|average order|top customers|avg order|order value)\b/.test(lower)) {
     const period = /\b(month|monthly)\b/.test(lower) ? "month" : /\b(year|annual)\b/.test(lower) ? "year" : "month";
 
-    // Base domain: confirmed sales orders
     const domain: any[] = [["state", "in", ["sale", "done"]]];
 
-    // If a specific year was detected, add a date range filter for that year
     if (year) {
       domain.push(["date_order", ">=", `${year}-01-01`]);
       domain.push(["date_order", "<=", `${year}-12-31`]);
@@ -159,6 +194,73 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
       type: "sales_analysis",
       payload,
       description: `Aggregate sales by ${period}${year ? ` for ${year}` : ""}`,
+    };
+  }
+
+  // Inventory / stock heuristics
+  if (/\b(stock|inventory|inventory levels|low stock|out of stock|reorder|warehouse)\b/.test(lower)) {
+    // If user mentions low/threshold try to include a threshold hint
+    const thresholdMatch = cleaned.match(/\bbelow\s+(\d{1,4})\b/);
+    const threshold = thresholdMatch ? Number(thresholdMatch[1]) : undefined;
+
+    // Prefer product.product search_read with qty/list_price fields
+    const payload = {
+      model: "product.product",
+      method: "search_read",
+      args: [threshold ? [["qty_available", "<", threshold]] : []],
+      kwargs: { fields: ["id", "name", "default_code", "qty_available", "list_price", "categ_id"], limit: 200 },
+    };
+
+    return {
+      type: "inventory_analysis",
+      payload,
+      description: threshold ? `Find products with qty_available < ${threshold}` : "List products and inventory levels",
+    };
+  }
+
+  // Financial heuristics
+  if (/\b(revenue|profit|financial|cash flow|income|invoic|accounts receivable|accounting|income statement)\b/.test(lower)) {
+    const period = /\b(month|monthly)\b/.test(lower) ? "month" : /\b(year|annual)\b/.test(lower) ? "year" : "month";
+    const domain: any[] = [];
+
+    if (year) {
+      domain.push(["invoice_date", ">=", `${year}-01-01`]);
+      domain.push(["invoice_date", "<=", `${year}-12-31`]);
+    }
+
+    const payload = {
+      model: "account.move",
+      method: "read_group",
+      args: [domain, ["amount_total"], [`invoice_date:${period}`]],
+      kwargs: { lazy: false },
+    };
+
+    return {
+      type: "financial_analysis",
+      payload,
+      description: `Aggregate accounting moves by ${period}${year ? ` for ${year}` : ""}`,
+    };
+  }
+
+  // Purchase / supplier heuristics
+  if (/\b(purchase|supplier|procurement|purchases|supplier performance|purchase orders)\b/.test(lower)) {
+    const domain: any[] = [];
+    if (year) {
+      domain.push(["date_order", ">=", `${year}-01-01`]);
+      domain.push(["date_order", "<=", `${year}-12-31`]);
+    }
+
+    const payload = {
+      model: "purchase.order",
+      method: "read_group",
+      args: [domain, ["amount_total"], ["partner_id"]],
+      kwargs: { lazy: false },
+    };
+
+    return {
+      type: "purchase_analysis",
+      payload,
+      description: `Aggregate purchase orders by supplier${year ? ` for ${year}` : ""}`,
     };
   }
 

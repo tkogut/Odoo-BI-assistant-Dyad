@@ -75,7 +75,6 @@ export function formatEmployeeSummary(results: any[]) {
     return "I couldn't find any matching employees.";
   }
 
-  // If just one employee, produce a single-sentence description.
   if (results.length === 1) {
     const e = results[0];
     const parts: string[] = [];
@@ -88,7 +87,6 @@ export function formatEmployeeSummary(results: any[]) {
     return `I found 1 employee: ${sentence}.`;
   }
 
-  // Multiple employees: brief sentence plus up to 10 lines
   const lines = results.slice(0, 10).map((r: any) => {
     const name = r.name ?? "Unknown";
     const dept = Array.isArray(r.department_id) && r.department_id[1] ? ` (${r.department_id[1]})` : "";
@@ -190,10 +188,8 @@ export async function summarizeEmployeesWithAI(openaiKey: string | undefined, em
     const prompt = `You are a helpful assistant. Here is a list of employees (up to 50):\n${lines}\n\nPlease produce a concise, human-friendly summary paragraph (1-3 sentences) describing who they are and any notable shared attributes (department, job title), and mention the total count. Keep it short.`;
 
     const content = await callOpenAIFallback(openaiKey, prompt, []);
-    // Some responses may include extraneous whitespace; trim.
     return content.trim();
   } catch {
-    // On any failure, fallback to the local formatter
     try {
       return formatEmployeeSummary(employees);
     } catch {
@@ -202,15 +198,54 @@ export async function summarizeEmployeesWithAI(openaiKey: string | undefined, em
   }
 }
 
-/**
- * Heuristics to detect whether a returned array likely contains employee records
- * (hr.employee) or partner/company records (res.partner). These are intentionally
- * conservative to avoid misclassifying employees as customers.
- */
+/** BI formatters - lightweight local formatters for common BI results */
 
+/** Inventory: product list with qty and price -> human-friendly lines */
+export function formatInventorySummary(results: any[]): string {
+  if (!results || results.length === 0) return "No inventory results.";
+  const rows = results.slice(0, 10).map((r: any, i: number) => {
+    const name = r.name ?? r.display_name ?? `Product ${r.id ?? i + 1}`;
+    const sku = r.default_code ? ` (${r.default_code})` : "";
+    const qty = r.qty_available ?? 0;
+    const price = r.list_price ?? null;
+    const priceStr = price !== null ? ` — ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(price)}` : "";
+    return `${i + 1}. ${name}${sku} — Stock: ${qty}${priceStr}`;
+  });
+  return `Inventory (${results.length} items). Top results:\n\n${rows.join("\n")}`;
+}
+
+/** Financial: grouped account.move results -> summarize periods */
+export function formatFinancialSummary(groups: any[]): string {
+  if (!groups || groups.length === 0) return "No financial groups returned.";
+  const rows = groups.slice(0, 12).map((g: any) => {
+    const period = g["invoice_date:month"] ?? g["invoice_date:year"] ?? g["invoice_date"] ?? g[0] ?? "(period)";
+    const amt = g.amount_total ?? g.amount ?? 0;
+    const amtStr = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amt);
+    return `${period}: ${amtStr}`;
+  });
+  return `Financial summary:\n${rows.join("\n")}`;
+}
+
+/** Purchase: grouped purchase.order by supplier -> top suppliers */
+export function formatPurchaseSummary(groups: any[]): string {
+  if (!groups || groups.length === 0) return "No purchase groups returned.";
+  const norm = groups
+    .map((g: any) => {
+      const partnerName = Array.isArray(g.partner_id) ? g.partner_id[1] : String(g.partner_id || "");
+      const amount = Number(g.amount_total || 0);
+      return { partnerName, amount };
+    })
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 10);
+  const rows = norm.map((n, i) => `${i + 1}. ${n.partnerName} — ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n.amount)}`);
+  return `Top suppliers:\n${rows.join("\n")}`;
+}
+
+/** Heuristics to detect whether a returned array likely contains employee records
+ *  or partner/company records. Kept intentionally conservative.
+ */
 export function isEmployeeLike(results: any): boolean {
   if (!Array.isArray(results) || results.length === 0) return false;
-  // If a high percentage of items contain department_id, work_email, work_phone, or job_title, it's employee-like
   const sample = results.slice(0, 10);
   let score = 0;
   for (const item of sample) {
@@ -219,10 +254,8 @@ export function isEmployeeLike(results: any): boolean {
     if (item.work_email !== undefined) score += 2;
     if (item.work_phone !== undefined) score += 1;
     if (item.job_title !== undefined) score += 2;
-    // small penalty if object has 'is_company' or 'vat' (indicates partner)
     if (item.is_company || item.vat) score -= 3;
   }
-  // threshold chosen to prefer avoiding false positives
   return score >= 4;
 }
 
@@ -236,7 +269,6 @@ export function isPartnerLike(results: any): boolean {
     if (item.total_invoiced !== undefined || item.amount_total !== undefined) score += 3;
     if (item.customer_rank !== undefined || item.supplier_rank !== undefined) score += 2;
     if (item.vat || item.website) score += 1;
-    // penalize presence of department_id or job_title
     if (item.department_id || item.job_title) score -= 3;
   }
   return score >= 3;
@@ -249,6 +281,9 @@ export default {
   runFallbackEmployeeSearch,
   callOpenAIFallback,
   summarizeEmployeesWithAI,
+  formatInventorySummary,
+  formatFinancialSummary,
+  formatPurchaseSummary,
   isEmployeeLike,
   isPartnerLike,
 };
