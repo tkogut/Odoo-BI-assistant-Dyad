@@ -78,6 +78,10 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
   const cleaned = (text || "").trim();
   const lower = cleaned.toLowerCase();
 
+  // Detect a 4-digit year like 2024
+  const yearMatch = cleaned.match(/\b(20\d{2})\b/);
+  const year = yearMatch ? yearMatch[1] : null;
+
   // Employee search heuristics
   if (
     /\b(employee|employees|staff|colleague|people|person|employee search|find employee|who works|who is)\b/.test(lower) ||
@@ -97,20 +101,31 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
   // Sales analysis heuristics
   if (/\b(sales|revenue|monthly sales|orders|average order|top customers|avg order|order value)\b/.test(lower)) {
     const period = /\b(month|monthly)\b/.test(lower) ? "month" : /\b(year|annual)\b/.test(lower) ? "year" : "month";
+
+    // Base domain: confirmed sales orders
+    const domain: any[] = [["state", "in", ["sale", "done"]]];
+
+    // If a specific year was detected, add a date range filter for that year
+    if (year) {
+      domain.push(["date_order", ">=", `${year}-01-01`]);
+      domain.push(["date_order", "<=", `${year}-12-31`]);
+    }
+
     const payload = {
       model: "sale.order",
       method: "read_group",
       args: [
-        [["state", "in", ["sale", "done"]]], // domain
+        domain,
         ["amount_total"],
         [`date_order:${period}`],
       ],
       kwargs: { lazy: false },
     };
+
     return {
       type: "sales_analysis",
       payload,
-      description: `Aggregate sales by ${period}`,
+      description: `Aggregate sales by ${period}${year ? ` for ${year}` : ""}`,
     };
   }
 
