@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 import KPICard from "./KPICard";
 import ChartWidget from "./ChartWidget";
+import MonthlyRevenueTable from "./MonthlyRevenueTable";
 import { postToRelay } from "@/components/ai-chat/utils";
 
 interface Props {
@@ -349,10 +350,16 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       </div>
 
       {/* Revenue trend directly under Total Revenue for readability */}
-      <div className="p-4 border rounded">
-        <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
-        {/* Use categorical 'period' (YYYY-MM) as x axis with readable labels; pass currency so the chart formats ticks/tooltips */}
-        <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" currency={currencyCode} />
+      <div className="p-4 border rounded space-y-4">
+        <div>
+          <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
+          <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" currency={currencyCode} />
+        </div>
+
+        <div>
+          <div className="text-sm font-medium mb-2">Month vs Monthly Revenue</div>
+          <MonthlyRevenueTable data={trendData.map((d) => ({ period: d.period, label: d.label, value: Number(d.value || 0) }))} currency={currencyCode} />
+        </div>
       </div>
 
       {showDebug && (
