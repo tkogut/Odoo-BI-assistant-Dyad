@@ -8,6 +8,7 @@ import KPICard from "./KPICard";
 import ChartWidget from "./ChartWidget";
 import MonthlyRevenueTable from "./MonthlyRevenueTable";
 import { postToRelay } from "@/components/ai-chat/utils";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 
 interface Props {
   relayHost: string;
@@ -136,6 +137,8 @@ function monthsForYear(year: string) {
   return arr;
 }
 
+type MonthlyRow = { date_order: string; amount_total: number };
+
 const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [loading, setLoading] = useState(false);
   const [revenue, setRevenue] = useState<string>("-");
@@ -152,6 +155,9 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
 
   // Year selector for revenue/trend (default to current year)
   const [year, setYear] = useState<string>(new Date().getFullYear().toString());
+
+  // last run from TotalRevenueCommand (if any)
+  const [lastRun] = useLocalStorage<{ year: string; data: MonthlyRow[]; savedAt: string } | null>("last_total_revenue_results", null);
 
   const safeHost = (h: string) => h.replace(/\/$/, "");
 
@@ -315,6 +321,60 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     }
   };
 
+  // Import last run saved by TotalRevenueCommand
+  const importLastRun = async () => {
+    if (!lastRun || !lastRun.data || lastRun.data.length === 0) {
+      showError("No saved TotalRevenueCommand run found. Execute the TotalRevenueCommand first.");
+      return;
+    }
+
+    try {
+      // Build monthMap from saved rows
+      const monthMap: Record<string, number> = {};
+      const unmapped: any[] = [];
+
+      for (const item of lastRun.data) {
+        const ym = normalizeToYearMonth(item.date_order);
+        const amount = safeNumber(item.amount_total);
+        if (ym && /^\d{4}-\d{2}$/.test(ym)) {
+          monthMap[ym] = (monthMap[ym] || 0) + amount;
+        } else {
+          unmapped.push({ raw: item.date_order, normalized: ym, amount, original: item });
+        }
+      }
+
+      // Build final series respecting chosen year if set
+      let finalSeries: Array<{ period: string; label: string; value: number }> = [];
+      const chosenYear = (year || "").trim();
+      if (/^\d{4}$/.test(chosenYear)) {
+        const months = monthsForYear(chosenYear);
+        finalSeries = months.map((ym) => ({
+          period: ym,
+          label: formatMonthLabel(ym),
+          value: monthMap[ym] ?? 0,
+        }));
+      } else {
+        const keys = Object.keys(monthMap).sort((a, b) => {
+          const ad = Date.parse(`${a}-01`);
+          const bd = Date.parse(`${b}-01`);
+          if (Number.isFinite(ad) && Number.isFinite(bd)) return ad - bd;
+          return String(a).localeCompare(String(b));
+        });
+        finalSeries = keys.map((ym) => ({ period: ym, label: formatMonthLabel(ym), value: monthMap[ym] ?? 0 }));
+      }
+
+      const totalRevenue = Object.values(monthMap).reduce((s, n) => s + Number(n || 0), 0);
+
+      setTrendData(finalSeries);
+      setRevenue(formatCurrency(totalRevenue));
+      setRawGroups(lastRun.data as any);
+      setMonthMapDebug({ monthMap, unmapped });
+      showSuccess(`Imported last run (${lastRun.year}) into dashboard.`);
+    } catch (err: any) {
+      showError(err?.message || String(err));
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -335,6 +395,10 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
 
           <Button variant="ghost" onClick={() => setShowDebug((s) => !s)}>
             {showDebug ? "Hide Debug" : "Show Debug"}
+          </Button>
+
+          <Button variant="ghost" onClick={importLastRun} title="Import last TotalRevenueCommand run">
+            Import Last Run
           </Button>
         </div>
       </div>

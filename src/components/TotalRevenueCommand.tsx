@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { showSuccess, showError } from "@/utils/toast";
 import { postToRelay } from "@/components/ai-chat/utils";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
 
 interface Props {
   relayHost?: string;
@@ -13,10 +14,19 @@ interface Props {
 
 type MonthlyResult = { date_order: string; amount_total: number };
 
+type StoredRevenue = {
+  year: string;
+  data: MonthlyResult[];
+  savedAt: string;
+};
+
 const TotalRevenueCommand: React.FC<Props> = ({ relayHost = "http://localhost:8000", apiKey = "super_rooster" }) => {
   const [year, setYear] = useState<string>(new Date().getFullYear().toString());
   const [results, setResults] = useState<MonthlyResult[] | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Persist last run for other parts of the app (BIDashboard import)
+  const [, setLastRun] = useLocalStorage<StoredRevenue | null>("last_total_revenue_results", null);
 
   const payload = {
     model: "sale.order",
@@ -65,6 +75,14 @@ const TotalRevenueCommand: React.FC<Props> = ({ relayHost = "http://localhost:80
         });
 
         setResults(mapped);
+
+        // Persist the last run (including the year and timestamp)
+        try {
+          setLastRun({ year: year, data: mapped, savedAt: new Date().toISOString() });
+        } catch {
+          // ignore storage errors
+        }
+
         showSuccess("Fetched monthly revenue.");
       } else {
         const errTxt = (r.parsed && (r.parsed.error || r.parsed.message)) || r.text || `HTTP ${r.status}`;
