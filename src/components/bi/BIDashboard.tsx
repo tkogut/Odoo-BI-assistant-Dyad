@@ -181,21 +181,38 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         kwargs: { lazy: false, orderby: "amount_total desc", limit },
       };
       const res = await postToRelay(execUrl, payload, apiKey, 30000);
-      const out: KV[] = [];
-      if (res.ok && res.parsed && Array.isArray(res.parsed.result)) {
-        const groups = res.parsed.result as any[];
-        // groups usually have partner_id as [id, name] or key fields
-        // normalize by partner name when available
-        for (const g of groups.slice(0, limit)) {
-          const partner = Array.isArray(g.partner_id) ? g.partner_id[1] : g.partner_id ?? "(unknown)";
-          const amount = safeNumber(g.amount_total ?? g.amount ?? 0);
-          out.push({ title: String(partner), value: formatCurrency(amount) });
-        }
-        setTopCustomers(out);
-        showSuccess(`Loaded top ${out.length} customers.`);
+
+      let groups: any[] = [];
+
+      // Normalize possible response shapes:
+      // 1) { success: true, result: [...] }
+      // 2) [...] (direct array)
+      // 3) { /* other */ } where parsed.result may be present
+      if (res.ok && res.parsed && res.parsed.success && Array.isArray(res.parsed.result)) {
+        groups = res.parsed.result as any[];
+      } else if (res.parsed && Array.isArray(res.parsed)) {
+        groups = res.parsed as any[];
+      } else if (res.ok && res.parsed && Array.isArray(res.parsed.result)) {
+        groups = res.parsed.result as any[];
       } else {
-        showError("Top customers query failed.");
+        // No recognizable groups returned
+        groups = [];
       }
+
+      if (groups.length === 0) {
+        setTopCustomers([]);
+        showError("Top customers query returned no groups.");
+        return;
+      }
+
+      const out: KV[] = [];
+      for (const g of groups.slice(0, limit)) {
+        const partner = Array.isArray(g.partner_id) ? g.partner_id[1] : g.partner_id ?? "(unknown)";
+        const amount = safeNumber(g.amount_total ?? g.amount ?? 0);
+        out.push({ title: String(partner), value: formatCurrency(amount) });
+      }
+      setTopCustomers(out);
+      showSuccess(`Loaded top ${out.length} customers.`);
     } catch (err: any) {
       showError(err?.message || String(err));
     } finally {
