@@ -1,4 +1,3 @@
-label when available so months display as 'Jan 2025' etc.">
 "use client";
 
 import React from "react";
@@ -24,6 +23,12 @@ interface ChartWidgetProps {
   className?: string;
 }
 
+/**
+ * ChartWidget
+ * - Categorical X axis that preserves the provided data order (useful for Jan..Dec series).
+ * - If each data point includes a 'label' field it will be used for tick formatting (e.g. "Jan 2025").
+ * - Rotated tick labels and extra bottom margin prevent clipping.
+ */
 const ChartWidget: React.FC<ChartWidgetProps> = ({ title, type = "line", data = [], xKey = "period", yKey = "value", className }) => {
   // Build a quick map from category value -> label (if points include a 'label' field)
   const labelMap = new Map<string | number, string>();
