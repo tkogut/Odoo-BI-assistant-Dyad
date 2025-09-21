@@ -18,6 +18,8 @@ import {
   runFallbackEmployeeSearch,
   callOpenAIFallback,
   summarizeEmployeesWithAI,
+  isEmployeeLike,
+  isPartnerLike,
 } from "@/components/ai-chat/utils";
 import interpretTextAsRelayCommand from "@/hooks/useNLInterpreter";
 import interpretWithOpenAI from "@/hooks/useOpenAIInterpreter";
@@ -117,11 +119,7 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
           let assistantText = "";
           try {
             const modelName = interpretedPayload?.model ?? "";
-            const looksLikeEmployeeArray =
-              Array.isArray(res) &&
-              res.length > 0 &&
-              typeof res[0] === "object" &&
-              (Object.prototype.hasOwnProperty.call(res[0], "name") || Object.prototype.hasOwnProperty.call(res[0], "work_email"));
+            const looksLikeEmployeeArray = isEmployeeLike(res);
 
             if (modelName === "hr.employee" || looksLikeEmployeeArray) {
               assistantText = openaiKey ? await summarizeEmployeesWithAI(openaiKey, res) : formatEmployeeSummary(res);
@@ -169,24 +167,29 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
         try {
           const primary = await postToRelay(execUrl, interp.payload, apiKey, 20000);
 
-          const looksLikePartnerArray = (res: any) =>
-            Array.isArray(res) &&
-            res.length > 0 &&
-            res.every((r: any) => typeof r === "object" && ("name" in r || "display_name" in r));
-
-          if (primary.ok && primary.parsed && primary.parsed.success && looksLikePartnerArray(primary.parsed.result)) {
-            const partners = primary.parsed.result as any[];
-            // Attempt to pick the top 5 by total_invoiced if present, otherwise trust returned ordering
-            const normalized = partners.map((p) => ({ id: p.id, name: p.name ?? p.display_name ?? String(p.id), total: Number(p.total_invoiced ?? p.amount_total ?? 0) }));
-            normalized.sort((a, b) => b.total - a.total);
-            const top = normalized.slice(0, 5);
-            if (top.length > 0) {
-              const lines = top.map((t) => `${t.name} — ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(t.total)}`);
-              pushAssistant(`Top ${top.length} customers by revenue:\n${lines.join("\n")}`);
-              showSuccess("Top customers retrieved from partner records.");
-              dismissToast(toastId);
-              setIsLoading(false);
-              return;
+          if (primary.ok && primary.parsed && primary.parsed.success) {
+            const primaryResult = primary.parsed.result;
+            // Use new helper to verify whether the result truly looks like partners (companies)
+            if (isPartnerLike(primaryResult)) {
+              const partners = primaryResult as any[];
+              const normalized = partners.map((p) => ({ id: p.id, name: p.name ?? p.display_name ?? String(p.id), total: Number(p.total_invoiced ?? p.amount_total ?? 0) }));
+              normalized.sort((a, b) => b.total - a.total);
+              const top = normalized.slice(0, 5);
+              if (top.length > 0) {
+                const lines = top.map((t) => `${t.name} — ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(t.total)}`);
+                pushAssistant(`Top ${top.length} customers by revenue:\n${lines.join("\n")}`);
+                showSuccess("Top customers retrieved from partner records.");
+                dismissToast(toastId);
+                setIsLoading(false);
+                return;
+              }
+            } else {
+              // If primary result looks employee-like, fall through to aggregation fallback
+              if (isEmployeeLike(primaryResult)) {
+                // intentionally fall through to aggregation fallback below
+              } else {
+                // Unknown structure; continue to aggregation fallback
+              }
             }
           }
         } catch {
@@ -246,7 +249,7 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
             model: "res.partner",
             method: "search_read",
             args: [[["id", "in", partnerIds]]],
-            kwargs: { fields: ["id", "name", "total_invoiced", "email", "phone"], limit: 20 },
+            kwargs: { fields: ["id", "name", "total_invoiced", "email", "phone", "is_company"], limit: 20 },
           };
 
           const partnersRes = await postToRelay(execUrl, partnerPayload, apiKey, 20000);
@@ -405,6 +408,58 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
           textLower.includes("object ai.assistant does not exist");
 
         if (res.ok && res.parsed && res.parsed.success) {
+          // If relay returned something that looks like employees when user likely asked about customers,
+          // we should avoid returning that directly. If result looks employee-like, attempt fallback searches.
+          if (isEmployeeLike(res.parsed.result)) {
+            // Try a fallback: attempt an execute_method read_group aggregation for sales then resolve partners
+            const groupPayload = {
+              model: "sale.order",
+              method: "read_group",
+              args: [
+                [["state", "in", ["sale", "done"]]],
+                ["amount_total"],
+                ["partner_id"],
+              ],
+              kwargs: { lazy: false },
+            };
+            try {
+              const groupRes = await postToRelay(url, groupPayload, apiKey, 20000);
+              if (groupRes.ok && groupRes.parsed && groupRes.parsed.success && Array.isArray(groupRes.parsed.result)) {
+                const groups = groupRes.parsed.result as any[];
+                const sorted = groups
+                  .map((g) => ({ partnerId: Array.isArray(g.partner_id) ? g.partner_id[0] : g.partner_id, amount: Number(g.amount_total ?? g.amount ?? 0) }))
+                  .filter((g) => g.partnerId)
+                  .sort((a, b) => b.amount - a.amount)
+                  .slice(0, 5);
+                const partnerIds = Array.from(new Set(sorted.map((s) => s.partnerId)));
+                if (partnerIds.length > 0) {
+                  const partnerPayload = {
+                    model: "res.partner",
+                    method: "search_read",
+                    args: [[["id", "in", partnerIds]]],
+                    kwargs: { fields: ["id", "name", "total_invoiced", "is_company"], limit: 20 },
+                  };
+                  const pRes = await postToRelay(url, partnerPayload, apiKey, 15000);
+                  if (pRes.ok && pRes.parsed && pRes.parsed.success && Array.isArray(pRes.parsed.result)) {
+                    const map: Record<number, any> = {};
+                    for (const p of pRes.parsed.result) map[p.id] = p;
+                    const lines = sorted.map((s) => {
+                      const p = map[s.partnerId];
+                      const name = p ? p.name ?? String(s.partnerId) : `Partner ${s.partnerId}`;
+                      return `${name} — ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(s.amount)}`;
+                    });
+                    pushAssistant(`I detected employee-like results from the relay, so I ran a sales aggregation fallback instead:\nTop customers by revenue:\n${lines.join("\n")}`);
+                    dismissToast(toastId);
+                    setIsLoading(false);
+                    return;
+                  }
+                }
+              }
+            } catch {
+              // ignore and continue to return the original response as a last resort
+            }
+          }
+
           pushAssistant(typeof res.parsed.result === "string" ? res.parsed.result : JSON.stringify(res.parsed.result));
           showSuccess("AI Assistant responded.");
           return;

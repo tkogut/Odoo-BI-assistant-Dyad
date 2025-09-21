@@ -201,3 +201,54 @@ export async function summarizeEmployeesWithAI(openaiKey: string | undefined, em
     }
   }
 }
+
+/**
+ * Heuristics to detect whether a returned array likely contains employee records
+ * (hr.employee) or partner/company records (res.partner). These are intentionally
+ * conservative to avoid misclassifying employees as customers.
+ */
+
+export function isEmployeeLike(results: any): boolean {
+  if (!Array.isArray(results) || results.length === 0) return false;
+  // If a high percentage of items contain department_id, work_email, work_phone, or job_title, it's employee-like
+  const sample = results.slice(0, 10);
+  let score = 0;
+  for (const item of sample) {
+    if (!item || typeof item !== "object") continue;
+    if (item.department_id !== undefined) score += 3;
+    if (item.work_email !== undefined) score += 2;
+    if (item.work_phone !== undefined) score += 1;
+    if (item.job_title !== undefined) score += 2;
+    // small penalty if object has 'is_company' or 'vat' (indicates partner)
+    if (item.is_company || item.vat) score -= 3;
+  }
+  // threshold chosen to prefer avoiding false positives
+  return score >= 4;
+}
+
+export function isPartnerLike(results: any): boolean {
+  if (!Array.isArray(results) || results.length === 0) return false;
+  const sample = results.slice(0, 10);
+  let score = 0;
+  for (const item of sample) {
+    if (!item || typeof item !== "object") continue;
+    if (item.is_company) score += 3;
+    if (item.total_invoiced !== undefined || item.amount_total !== undefined) score += 3;
+    if (item.customer_rank !== undefined || item.supplier_rank !== undefined) score += 2;
+    if (item.vat || item.website) score += 1;
+    // penalize presence of department_id or job_title
+    if (item.department_id || item.job_title) score -= 3;
+  }
+  return score >= 3;
+}
+
+export default {
+  postToRelay,
+  postSearchEmployee,
+  formatEmployeeSummary,
+  runFallbackEmployeeSearch,
+  callOpenAIFallback,
+  summarizeEmployeesWithAI,
+  isEmployeeLike,
+  isPartnerLike,
+};
