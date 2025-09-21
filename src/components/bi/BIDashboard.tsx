@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 import KPICard from "./KPICard";
 import ChartWidget from "./ChartWidget";
@@ -21,10 +22,11 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [revenue, setRevenue] = useState<string>("-");
   const [inventoryValue, setInventoryValue] = useState<string>("-");
   const [topSuppliers, setTopSuppliers] = useState<KV[]>([]);
-  const [topCustomers, setTopCustomers] = useState<KV[]>([]);
-  const [bestProducts, setBestProducts] = useState<KV[]>([]);
   const [trendData, setTrendData] = useState<Array<Record<string, any>>>([]);
   const [currencyCode, setCurrencyCode] = useState<string>(defaultCurrency);
+
+  // Year selector for revenue/trend (default to current year)
+  const [year, setYear] = useState<string>(new Date().getFullYear().toString());
 
   const safeHost = (h: string) => h.replace(/\/$/, "");
 
@@ -83,11 +85,19 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
 
       await detectCompanyCurrency(execUrl);
 
-      // monthly revenue via read_group
+      // Build domain for sale.order grouped query and include year bounds if provided
+      const domain: any[] = [["state", "in", ["sale", "done"]]];
+      const chosenYear = (year || "").trim();
+      if (/^\d{4}$/.test(chosenYear)) {
+        domain.push(["date_order", ">=", `${chosenYear}-01-01`]);
+        domain.push(["date_order", "<=", `${chosenYear}-12-31`]);
+      }
+
+      // monthly revenue via read_group filtered by year when applicable
       const groupPayload = {
         model: "sale.order",
         method: "read_group",
-        args: [[["state", "in", ["sale", "done"]]], ["amount_total"], ["date_order:month"]],
+        args: [domain, ["amount_total"], ["date_order:month"]],
         kwargs: { lazy: false },
       };
       const groupRes = await postToRelay(execUrl, groupPayload, apiKey, 30000);
@@ -132,7 +142,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         setInventoryValue("-");
       }
 
-      // Top suppliers
+      // Top suppliers (unchanged)
       const purchaseGroupPayload = {
         model: "purchase.order",
         method: "read_group",
@@ -166,101 +176,23 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     }
   };
 
-  const fetchTopCustomers = async (limit = 10) => {
-    if (!relayHost) {
-      showError("Please configure a Relay Host in Settings.");
-      return;
-    }
-    const toastId = showLoading("Fetching top customers...");
-    try {
-      const execUrl = `${safeHost(relayHost)}/api/execute_method`;
-      const payload = {
-        model: "sale.order",
-        method: "read_group",
-        args: [[["state", "in", ["sale", "done"]]], ["amount_total"], ["partner_id"]],
-        kwargs: { lazy: false, orderby: "amount_total desc", limit },
-      };
-      const res = await postToRelay(execUrl, payload, apiKey, 30000);
-
-      let groups: any[] = [];
-
-      // Normalize possible response shapes:
-      // 1) { success: true, result: [...] }
-      // 2) [...] (direct array)
-      // 3) { /* other */ } where parsed.result may be present
-      if (res.ok && res.parsed && res.parsed.success && Array.isArray(res.parsed.result)) {
-        groups = res.parsed.result as any[];
-      } else if (res.parsed && Array.isArray(res.parsed)) {
-        groups = res.parsed as any[];
-      } else if (res.ok && res.parsed && Array.isArray(res.parsed.result)) {
-        groups = res.parsed.result as any[];
-      } else {
-        // No recognizable groups returned
-        groups = [];
-      }
-
-      if (groups.length === 0) {
-        setTopCustomers([]);
-        showError("Top customers query returned no groups.");
-        return;
-      }
-
-      const out: KV[] = [];
-      for (const g of groups.slice(0, limit)) {
-        const partner = Array.isArray(g.partner_id) ? g.partner_id[1] : g.partner_id ?? "(unknown)";
-        const amount = safeNumber(g.amount_total ?? g.amount ?? 0);
-        out.push({ title: String(partner), value: formatCurrency(amount) });
-      }
-      setTopCustomers(out);
-      showSuccess(`Loaded top ${out.length} customers.`);
-    } catch (err: any) {
-      showError(err?.message || String(err));
-    } finally {
-      dismissToast(toastId);
-    }
-  };
-
-  const fetchBestProducts = async (limit = 10) => {
-    if (!relayHost) {
-      showError("Please configure a Relay Host in Settings.");
-      return;
-    }
-    const toastId = showLoading("Fetching best-selling products...");
-    try {
-      const execUrl = `${safeHost(relayHost)}/api/execute_method`;
-      const payload = {
-        model: "sale.order.line",
-        method: "read_group",
-        args: [[], ["product_uom_qty", "price_subtotal"], ["product_id"]],
-        kwargs: { lazy: false, orderby: "product_uom_qty desc", limit },
-      };
-      const res = await postToRelay(execUrl, payload, apiKey, 30000);
-      const out: KV[] = [];
-      if (res.ok && res.parsed && Array.isArray(res.parsed.result)) {
-        const groups = res.parsed.result as any[];
-        for (const g of groups.slice(0, limit)) {
-          const p = Array.isArray(g.product_id) ? g.product_id[1] : g.product_id ?? "(unknown)";
-          const qty = safeNumber(g.product_uom_qty ?? 0);
-          out.push({ title: String(p), value: `${qty.toFixed(0)} units` });
-        }
-        setBestProducts(out);
-        showSuccess(`Loaded ${out.length} best-selling products.`);
-      } else {
-        showError("Best-selling products query failed.");
-      }
-    } catch (err: any) {
-      showError(err?.message || String(err));
-    } finally {
-      dismissToast(toastId);
-    }
-  };
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">BI Dashboard</h3>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-3">
           <div className="text-sm text-muted-foreground self-center">Currency: <span className="font-mono">{currencyCode}</span></div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground">Year</label>
+            <Input
+              value={year}
+              onChange={(e) => setYear(e.target.value)}
+              className="w-24"
+              placeholder="YYYY"
+            />
+          </div>
+
           <Button onClick={fetchKPIs} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh KPIs"}
           </Button>
@@ -268,15 +200,12 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Total Revenue" value={revenue} subtitle={`Sum of completed sales orders (${currencyCode})`} loading={loading} />
+        <KPICard title="Total Revenue" value={revenue} subtitle={`Sum of completed sales orders (${year || "all time"})`} loading={loading} />
         <KPICard title="Inventory Value" value={inventoryValue} subtitle={`Estimated stock value (${currencyCode})`} loading={loading} />
         <div>
           <div className="p-4 border rounded space-y-3">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-medium">Top Suppliers</div>
-              <div className="flex gap-2">
-                <Button size="sm" variant="ghost" onClick={() => { /* no-op for now */ }}>Refresh</Button>
-              </div>
             </div>
             {topSuppliers.length === 0 ? (
               <div className="text-sm text-muted-foreground">No suppliers listed</div>
@@ -292,50 +221,19 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-4 border rounded space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-medium">Top Customers</div>
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => fetchTopCustomers(5)}>Top 5</Button>
-              <Button size="sm" variant="ghost" onClick={() => fetchTopCustomers(10)}>Top 10</Button>
-            </div>
-          </div>
-          {topCustomers.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No data. Click Top 5 or Top 10.</div>
-          ) : (
-            topCustomers.map((c, i) => (
-              <div key={i} className="flex items-center justify-between py-1">
-                <div className="text-sm">{c.title}</div>
-                <div className="text-sm font-medium">{c.value}</div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <div className="p-4 border rounded space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-medium">Best-selling Products</div>
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => fetchBestProducts(5)}>Top 5</Button>
-              <Button size="sm" variant="ghost" onClick={() => fetchBestProducts(10)}>Top 10</Button>
-            </div>
-          </div>
-          {bestProducts.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No data. Click Top 5 or Top 10.</div>
-          ) : (
-            bestProducts.map((p, i) => (
-              <div key={i} className="flex items-center justify-between py-1">
-                <div className="text-sm">{p.title}</div>
-                <div className="text-sm font-medium">{p.value}</div>
-              </div>
-            ))
-          )}
-        </div>
-
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="p-4 border rounded">
           <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
           <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
+        </div>
+
+        <div className="p-4 border rounded space-y-3">
+          <div className="text-sm font-medium mb-2">Summary</div>
+          <div className="text-sm">
+            <div>Total Revenue: <span className="font-medium">{revenue}</span></div>
+            <div className="mt-2">Showing data for: <span className="font-mono">{year || "all time"}</span></div>
+            <div className="mt-4 text-sm text-muted-foreground">Removed Top Customers and Best-selling Products panels (per settings) — use the Refresh KPIs button after changing the year.</div>
+          </div>
         </div>
       </div>
     </div>
