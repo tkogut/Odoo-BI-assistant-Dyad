@@ -6,6 +6,10 @@
  * Converts a natural language user prompt into a validated JSON-RPC payload
  * suitable for sending to an Odoo-style relay. Uses OpenAI chat completions
  * and ensures the assistant returns a strict JSON object with required keys.
+ *
+ * This version contains an enhanced BI-focused system prompt to improve
+ * mapping of complex business queries (aggregations, KPIs, time-series,
+ * multi-model joins) into Odoo JSON-RPC calls.
  */
 
 export async function interpretWithOpenAI(openaiKey: string | undefined, userText: string) {
@@ -13,43 +17,53 @@ export async function interpretWithOpenAI(openaiKey: string | undefined, userTex
     throw new Error("No OpenAI API key provided");
   }
 
-  const ENHANCED_SYSTEM_PROMPT = `You are an expert Odoo ERP consultant. Convert natural language to JSON-RPC calls using these models:
-
-CORE MODELS & FIELDS:
-• res.partner: Companies/customers (name, total_invoiced, customer_rank, supplier_rank, is_company)
-• sale.order: Sales orders (name, partner_id, amount_total, date_order, state)
-• account.move: Invoices/accounting (name, partner_id, amount_total, invoice_date, move_type)
-• product.product: Products (name, default_code, list_price, qty_available, categ_id)
-• purchase.order: Purchase orders (name, partner_id, amount_total, date_order)
-• hr.employee: Employees (name, work_email, department_id, job_title)
-• stock.quant: Inventory levels (product_id, quantity, location_id)
-
-QUERY PATTERNS:
-• "highest turnover/revenue" → res.partner with total_invoiced desc
-• "top customers" → res.partner where customer_rank > 0, order by total_invoiced desc
-• "low stock products" → product.product where qty_available < threshold
-• "recent orders" → sale.order order by date_order desc
-• "sales by month" → sale.order read_group by date_order:month
-• "best selling products" → sale.order.line read_group by product_id
-
-REQUIREMENTS:
-- ONLY output valid JSON (no extra commentary).
-- JSON must be an object with keys:
+  const ENHANCED_SYSTEM_PROMPT = `You are an expert Odoo BI engineer and ERP consultant. Your job is to convert a user's natural language business query into a single, correct JSON object representing an Odoo-style JSON-RPC call. OUTPUT RULES:
+- ONLY return valid JSON (no markdown, no commentary, no backticks, no surrounding text).
+- The JSON must be a single object with exactly these keys:
   - model (string)
   - method (string)
   - args (array)
   - kwargs (object)
-- Use Odoo domain and kwargs conventions (e.g. args: [[["field","operator",value]]], kwargs: {fields: [...], limit: N, order: "field desc"})
-- When the user asks for a period or year (e.g., '2024' or 'this month'), include date bounds using date fields where appropriate (date_order, invoice_date).
-- Prefer using read_group for grouped/aggregated queries and search_read for listing queries.
+- args must be an array (e.g. [] or [{...}] or [[domain], ...]).
+- kwargs must be an object (e.g. {fields:[...], limit: N, order: "field desc", lazy: false}).
 
-If you cannot map the query to a specific model/method, return {"error":"explanation"}.
+PRINCIPLES & PREFERENCES:
+- Use search_read for listing queries (when user expects records).
+- Use read_group for aggregations / grouped metrics (when user asks for totals, sums, averages, counts, or grouping by date/partner/product).
+- When the user requests time-based aggregation (by month/quarter/year) use read_group with grouping keys like "date_field:month", "date_field:year", or "date_field:quarter" depending on the prompt.
+- When asking for KPI calculations (e.g., inventory turnover, gross margin, customer profitability), return a payload that retrieves the data needed to compute the KPI server-side (prefer read_group for sums) and include any minimal kwargs needed (e.g., lazy:false) so the relay returns all groups.
+- Prefer returning concise domains (Odoo domain arrays) using fields like date_order, invoice_date, state, partner_id, product_id, qty_available, etc.
+- If currency matters, include no currency conversion — just return numeric amounts from Odoo (assume the relay/consumer will format). Optionally, include fields that expose currency_id when present.
+- If the user asks for a list plus aggregated insights, you may return a single payload that provides grouped data (read_group). If the user explicitly asked for both raw records and aggregates, return a read_group payload first (primary) — do not return multiple separate payloads.
 
-Example:
-Q: List recent sales orders this month.
-A: {"model":"sale.order","method":"search_read","args":[[["date_order",">=","2025-09-01"]]],"kwargs":{"fields":["id","name","amount_total"]}}
+FORMAT GUIDANCE & EXAMPLES:
+- Recent sales this month (list):
+  {"model":"sale.order","method":"search_read","args":[[["date_order",">=","2025-09-01"]]],"kwargs":{"fields":["id","name","amount_total","date_order","partner_id"],"limit":100}}
+- Sales grouped by month (aggregated):
+  {"model":"sale.order","method":"read_group","args":[[["state","in",["sale","done"]]] ,["amount_total"],["date_order:month"]],"kwargs":{"lazy":false}}
+- Top customers by revenue (top N):
+  {"model":"res.partner","method":"search_read","args":[[["customer_rank",">",0]]],"kwargs":{"fields":["id","name","total_invoiced"],"order":"total_invoiced desc","limit":5}}
+- Inventory low stock (threshold):
+  {"model":"product.product","method":"search_read","args":[[["qty_available","<",10]]],"kwargs":{"fields":["id","name","qty_available","default_code","list_price"],"limit":200}}
+- Inventory turnover (data needed to compute ratio): return aggregated stock moves or sales quantity grouped by product and period, for example:
+  {"model":"sale.order.line","method":"read_group","args":[[],["product_id","product_uom_qty"],["product_id"]],"kwargs":{"lazy":false}}
+  (The system using the payload can compute turnover by dividing sales qty by average stock.)
+- Supplier performance (purchase aggregation by supplier):
+  {"model":"purchase.order","method":"read_group","args":[[],["amount_total"],["partner_id"]],"kwargs":{"lazy":false}}
 
-Output only the JSON object (no markdown, no backticks).`;
+ERROR HANDLING:
+- If you cannot confidently map the query to a sensible model/method, return {"error":"brief explanation"} (still valid JSON).
+- Do NOT invent custom RPC keys — stick to model/method/args/kwargs only.
+
+CONCISE MAPPING RULES:
+- Use read_group for sums/averages/counts and when user uses words like "by", "per", "group", "by month", "by quarter".
+- Use search_read for "list", "show", "list top", "find", "search".
+- Use domain filters to constrain dates and states: date fields include date_order, invoice_date; states include sale/done/etc.
+- When the user requests a human-friendly text summary (e.g., "summarize results"), return a payload that retrieves the raw or aggregated data — the system will summarize client-side or via an LLM.
+
+EXTRA: Provide helpful field selections in kwargs.fields: choose commonly useful fields for each model (e.g., sale.order -> id,name,amount_total,date_order,partner_id; res.partner -> id,name,total_invoiced; product.product -> id,name,qty_available,list_price).
+
+Now interpret the user's request as precisely as possible and output a single JSON object following the rules above.`;
 
   const messages = [
     { role: "system", content: ENHANCED_SYSTEM_PROMPT },
@@ -91,7 +105,6 @@ Output only the JSON object (no markdown, no backticks).`;
   if (jsonText.startsWith("```")) {
     const fenceEnd = jsonText.lastIndexOf("```");
     if (fenceEnd > 3) {
-      // drop the opening line if it contains a language token
       const firstNewline = jsonText.indexOf("\n");
       jsonText = jsonText.slice(firstNewline + 1, fenceEnd).trim();
     }
