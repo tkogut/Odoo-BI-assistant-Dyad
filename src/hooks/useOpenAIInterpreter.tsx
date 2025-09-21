@@ -1,5 +1,12 @@
-JSON-RPC interpreter with richer system prompt and validation.">
 "use client";
+
+/**
+ * JSON-RPC interpreter with richer system prompt and validation.
+ *
+ * Converts a natural language user prompt into a validated JSON-RPC payload
+ * suitable for sending to an Odoo-style relay. Uses OpenAI chat completions
+ * and ensures the assistant returns a strict JSON object with required keys.
+ */
 
 export async function interpretWithOpenAI(openaiKey: string | undefined, userText: string) {
   if (!openaiKey) {
