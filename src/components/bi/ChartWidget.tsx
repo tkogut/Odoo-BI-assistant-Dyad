@@ -36,17 +36,37 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({ title, type = "line", data = 
           <div style={{ width: "100%", height: 220 }}>
             <ResponsiveContainer>
               {type === "line" ? (
-                <LineChart data={data}>
+                <LineChart data={data} margin={{ top: 10, right: 16, left: 0, bottom: 70 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey={xKey} />
+                  {/* Use categorical X axis, force ticks (interval=0) and rotate labels for readability.
+                      Provide extra height via margin/bottom so rotated labels don't overlap. */}
+                  <XAxis
+                    dataKey={xKey}
+                    type="category"
+                    interval={0}
+                    tick={{ fontSize: 12 }}
+                    height={60}
+                    angle={-45}
+                    textAnchor="end"
+                    allowDuplicatedCategory={false}
+                  />
                   <YAxis />
                   <Tooltip />
                   <Line type="monotone" dataKey={yKey} stroke="#3b82f6" strokeWidth={2} dot={{ r: 2 }} />
                 </LineChart>
               ) : (
-                <BarChart data={data}>
+                <BarChart data={data} margin={{ top: 10, right: 16, left: 0, bottom: 70 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey={xKey} />
+                  <XAxis
+                    dataKey={xKey}
+                    type="category"
+                    interval={0}
+                    tick={{ fontSize: 12 }}
+                    height={60}
+                    angle={-45}
+                    textAnchor="end"
+                    allowDuplicatedCategory={false}
+                  />
                   <YAxis />
                   <Tooltip />
                   <Bar dataKey={yKey} fill="#3b82f6" />
