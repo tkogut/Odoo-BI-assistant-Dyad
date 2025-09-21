@@ -26,10 +26,9 @@ interface ChartWidgetProps {
 
 /**
  * ChartWidget
- * - Categorical X axis that preserves the provided data order (useful for Jan..Dec series).
- * - If each data point includes a 'label' field it will be used for tick formatting (e.g. "Jan 2025").
- * - Rotated tick labels and extra bottom margin prevent clipping.
- * - Formats Y axis ticks and tooltips as currency and forces a domain starting at 0 with a small top padding.
+ * - Coerces incoming Y values to numbers so charts render correctly.
+ * - Ensures Y axis has a sensible max (at least 1) to avoid a collapsed axis when all values are zero.
+ * - Formats Y axis ticks and tooltips as currency.
  */
 const ChartWidget: React.FC<ChartWidgetProps> = ({
   title,
@@ -50,6 +49,17 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({
     }
   }
 
+  // Coerce Y values to numbers and produce a processed data set used by the charts
+  const processedData = (Array.isArray(data) ? data : []).map((d) => {
+    const raw = d[yKey];
+    const num = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").replace(/[, ]+/g, ""));
+    const value = Number.isFinite(num) ? num : 0;
+    return {
+      ...d,
+      [yKey]: value,
+    };
+  });
+
   const formatCurrency = (v: number | string | undefined) => {
     try {
       const n = Number(v ?? 0);
@@ -63,17 +73,18 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({
     }
   };
 
-  // Domain helper: start at 0 and add 10% headroom above the max value (rounded)
-  const yDomain = (data: any[]) => {
-    if (!Array.isArray(data) || data.length === 0) return [0, "auto"];
-    const vals = data.map((d) => Number(d[yKey] ?? 0)).filter((n) => Number.isFinite(n));
+  // Domain helper: start at 0 and add 10% headroom above the max value (rounded).
+  // Ensure at least 1 when max is 0 so axis does not collapse.
+  const yDomain = (d: any[]) => {
+    if (!Array.isArray(d) || d.length === 0) return [0, "auto"];
+    const vals = d.map((it) => Number(it[yKey] ?? 0)).filter((n) => Number.isFinite(n));
     if (vals.length === 0) return [0, "auto"];
     const max = Math.max(...vals);
-    const padded = Math.ceil(max * 1.1);
+    const padded = Math.max(1, Math.ceil(max * 1.1));
     return [0, padded];
   };
 
-  const computedDomain = yDomain(data);
+  const computedDomain = yDomain(processedData);
 
   return (
     <Card className={className}>
@@ -81,15 +92,14 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({
         <CardTitle className="text-sm">{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        {data.length === 0 ? (
+        {processedData.length === 0 ? (
           <div className="text-sm text-muted-foreground">No data to display.</div>
         ) : (
           <div style={{ width: "100%", height: 220 }}>
             <ResponsiveContainer>
               {type === "line" ? (
-                <LineChart data={data} margin={{ top: 10, right: 16, left: 0, bottom: 70 }}>
+                <LineChart data={processedData} margin={{ top: 10, right: 16, left: 0, bottom: 70 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  {/* Categorical X axis: preserve order of data array, show all ticks, rotate labels */}
                   <XAxis
                     dataKey={xKey}
                     type="category"
@@ -104,7 +114,6 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({
                       return labelMap.get(key) ?? String(val);
                     }}
                   />
-                  {/* Y axis starts at 0 and uses a padded dataMax domain; ticks formatted as currency */}
                   <YAxis
                     domain={computedDomain as any}
                     tickFormatter={(val: any) => formatCurrency(Number(val))}
@@ -117,7 +126,7 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({
                   <Line type="monotone" dataKey={yKey} stroke="#3b82f6" strokeWidth={2} dot={{ r: 2 }} />
                 </LineChart>
               ) : (
-                <BarChart data={data} margin={{ top: 10, right: 16, left: 0, bottom: 70 }}>
+                <BarChart data={processedData} margin={{ top: 10, right: 16, left: 0, bottom: 70 }}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis
                     dataKey={xKey}
