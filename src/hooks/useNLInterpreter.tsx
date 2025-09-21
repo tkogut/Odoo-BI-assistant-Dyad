@@ -12,7 +12,7 @@ import { useMemo } from "react";
  *  - sales aggregation (read_group on sale.order)
  *  - dashboard generation (ask ai.assistant.generate_dashboard)
  *  - fallback to ai.assistant.query
- *  - top customer by turnover (read_group grouping by partner_id)
+ *  - top customer by turnover (res.partner search_read preferred)
  */
 
 export type NLIntentType = "search_employee" | "sales_analysis" | "generate_dashboard" | "ai_assistant" | "top_customer";
@@ -46,8 +46,8 @@ export type NLInterpretation =
   | {
       type: "top_customer";
       payload: {
-        model: "sale.order";
-        method: "read_group";
+        model: string;
+        method: string;
         args: any[];
         kwargs?: Record<string, any>;
       };
@@ -112,25 +112,22 @@ export function interpretTextAsRelayCommand(text: string): NLInterpretation {
   // Top customer / highest turnover heuristics
   if (/\b(top customer|top client|highest turnover|highest revenue|highest sales|largest customer|biggest customer|most revenue)\b/.test(lower) || (/\b(company|customer|client)\b/.test(lower) && /\b(highest|top|largest|biggest)\b/.test(lower))) {
     const period = year ? ` for ${year}` : "";
-    // Base domain: confirmed sales orders
-    const domain: any[] = [["state", "in", ["sale", "done"]]];
-    if (year) {
-      domain.push(["date_order", ">=", `${year}-01-01`]);
-      domain.push(["date_order", "<=", `${year}-12-31`]);
-    }
-
-    // Group by partner_id and aggregate amount_total
+    // Prefer a direct res.partner search_read on total_invoiced to avoid grouping ambiguity
     const payload = {
-      model: "sale.order",
-      method: "read_group",
-      args: [domain, ["amount_total", "partner_id"], ["partner_id"]],
-      kwargs: { lazy: false },
+      model: "res.partner",
+      method: "search_read",
+      args: [[["customer_rank", ">", 0]]],
+      kwargs: {
+        fields: ["id", "name", "total_invoiced", "email", "phone"],
+        order: "total_invoiced desc",
+        limit: 5,
+      },
     };
 
     return {
       type: "top_customer",
       payload,
-      description: `Find top customer by turnover${period}`,
+      description: `Find top 5 customers by total_invoiced${period} using res.partner.search_read`,
     };
   }
 
