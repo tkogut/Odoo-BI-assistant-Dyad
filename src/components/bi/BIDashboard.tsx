@@ -95,6 +95,11 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [trendData, setTrendData] = useState<Array<Record<string, any>>>([]);
   const [currencyCode, setCurrencyCode] = useState<string>(defaultCurrency);
 
+  // Debug states
+  const [rawGroups, setRawGroups] = useState<any[] | null>(null);
+  const [monthMapDebug, setMonthMapDebug] = useState<Record<string, number>>({});
+  const [showDebug, setShowDebug] = useState<boolean>(false);
+
   // Year selector for revenue/trend (default to current year)
   const [year, setYear] = useState<string>(new Date().getFullYear().toString());
 
@@ -174,9 +179,11 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       // Map YYYY-MM -> amount
       const monthMap: Record<string, number> = {};
       const seenMonths = new Set<string>();
+      let rawGroupsLocal: any[] = [];
 
       if (groupRes.ok && groupRes.parsed && groupRes.parsed.success && Array.isArray(groupRes.parsed.result)) {
         const groups = groupRes.parsed.result as any[];
+        rawGroupsLocal = groups;
         for (const g of groups) {
           const raw = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? String(g.period ?? "");
           const ym = normalizeToYearMonth(raw);
@@ -187,7 +194,14 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
             seenMonths.add(ym);
           }
         }
+      } else {
+        // If upstream returned non-standard shape, capture whatever parsed value exists for debugging
+        rawGroupsLocal = groupRes.parsed ?? null;
       }
+
+      // Persist debug info before building final series
+      setRawGroups(rawGroupsLocal as any);
+      setMonthMapDebug(monthMap);
 
       let finalSeries: Array<{ period: string; label: string; value: number }> = [];
 
@@ -230,6 +244,8 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       showError(err?.message || String(err));
       setRevenue("-");
       setTrendData([]);
+      setRawGroups(null);
+      setMonthMapDebug({});
     } finally {
       dismissToast(toastId);
       setLoading(false);
@@ -253,6 +269,10 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
           <Button onClick={fetchKPIs} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh KPIs"}
           </Button>
+
+          <Button variant="ghost" onClick={() => setShowDebug((s) => !s)}>
+            {showDebug ? "Hide Debug" : "Show Debug"}
+          </Button>
         </div>
       </div>
 
@@ -272,6 +292,38 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         {/* Use categorical 'period' (YYYY-MM) as x axis with readable labels */}
         <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
       </div>
+
+      {showDebug && (
+        <div className="p-4 border rounded bg-white">
+          <div className="flex items-center justify-between mb-3">
+            <div className="font-medium">Debug: Aggregation details</div>
+            <div className="text-sm text-muted-foreground">Useful to verify read_group → month mapping</div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <div className="text-xs font-medium mb-2">Raw read_group response</div>
+              <pre className="bg-muted p-2 rounded text-xs max-h-56 overflow-auto whitespace-pre-wrap">
+                {rawGroups ? JSON.stringify(rawGroups, null, 2) : "No raw groups captured."}
+              </pre>
+            </div>
+
+            <div>
+              <div className="text-xs font-medium mb-2">Normalized YYYY‑MM → revenue map</div>
+              <pre className="bg-muted p-2 rounded text-xs max-h-56 overflow-auto whitespace-pre-wrap">
+                {Object.keys(monthMapDebug).length ? JSON.stringify(monthMapDebug, null, 2) : "No month map data."}
+              </pre>
+            </div>
+
+            <div>
+              <div className="text-xs font-medium mb-2">Final series (what is rendered)</div>
+              <pre className="bg-muted p-2 rounded text-xs max-h-56 overflow-auto whitespace-pre-wrap">
+                {trendData && trendData.length ? JSON.stringify(trendData, null, 2) : "No final series."}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="p-4 border rounded space-y-3">
         <div className="text-sm font-medium mb-2">Summary</div>
