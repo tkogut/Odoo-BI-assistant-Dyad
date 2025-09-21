@@ -21,6 +21,7 @@ interface ChartWidgetProps {
   xKey?: string;
   yKey?: string;
   className?: string;
+  currency?: string;
 }
 
 /**
@@ -28,8 +29,17 @@ interface ChartWidgetProps {
  * - Categorical X axis that preserves the provided data order (useful for Jan..Dec series).
  * - If each data point includes a 'label' field it will be used for tick formatting (e.g. "Jan 2025").
  * - Rotated tick labels and extra bottom margin prevent clipping.
+ * - Formats Y axis ticks and tooltips as currency and forces a domain starting at 0 with a small top padding.
  */
-const ChartWidget: React.FC<ChartWidgetProps> = ({ title, type = "line", data = [], xKey = "period", yKey = "value", className }) => {
+const ChartWidget: React.FC<ChartWidgetProps> = ({
+  title,
+  type = "line",
+  data = [],
+  xKey = "period",
+  yKey = "value",
+  className,
+  currency = "USD",
+}) => {
   // Build a quick map from category value -> label (if points include a 'label' field)
   const labelMap = new Map<string | number, string>();
   if (Array.isArray(data) && data.length > 0) {
@@ -39,6 +49,31 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({ title, type = "line", data = 
       labelMap.set(key, label);
     }
   }
+
+  const formatCurrency = (v: number | string | undefined) => {
+    try {
+      const n = Number(v ?? 0);
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: currency || "USD",
+        maximumFractionDigits: 0,
+      }).format(n);
+    } catch {
+      return String(v ?? "");
+    }
+  };
+
+  // Domain helper: start at 0 and add 10% headroom above the max value (rounded)
+  const yDomain = (data: any[]) => {
+    if (!Array.isArray(data) || data.length === 0) return [0, "auto"];
+    const vals = data.map((d) => Number(d[yKey] ?? 0)).filter((n) => Number.isFinite(n));
+    if (vals.length === 0) return [0, "auto"];
+    const max = Math.max(...vals);
+    const padded = Math.ceil(max * 1.1);
+    return [0, padded];
+  };
+
+  const computedDomain = yDomain(data);
 
   return (
     <Card className={className}>
@@ -69,8 +104,16 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({ title, type = "line", data = 
                       return labelMap.get(key) ?? String(val);
                     }}
                   />
-                  <YAxis />
-                  <Tooltip labelFormatter={(label: any) => labelMap.get(label) ?? String(label)} />
+                  {/* Y axis starts at 0 and uses a padded dataMax domain; ticks formatted as currency */}
+                  <YAxis
+                    domain={computedDomain as any}
+                    tickFormatter={(val: any) => formatCurrency(Number(val))}
+                    allowDecimals={false as any}
+                  />
+                  <Tooltip
+                    labelFormatter={(label: any) => labelMap.get(label) ?? String(label)}
+                    formatter={(value: any) => formatCurrency(value)}
+                  />
                   <Line type="monotone" dataKey={yKey} stroke="#3b82f6" strokeWidth={2} dot={{ r: 2 }} />
                 </LineChart>
               ) : (
@@ -90,8 +133,15 @@ const ChartWidget: React.FC<ChartWidgetProps> = ({ title, type = "line", data = 
                       return labelMap.get(key) ?? String(val);
                     }}
                   />
-                  <YAxis />
-                  <Tooltip labelFormatter={(label: any) => labelMap.get(label) ?? String(label)} />
+                  <YAxis
+                    domain={computedDomain as any}
+                    tickFormatter={(val: any) => formatCurrency(Number(val))}
+                    allowDecimals={false as any}
+                  />
+                  <Tooltip
+                    labelFormatter={(label: any) => labelMap.get(label) ?? String(label)}
+                    formatter={(value: any) => formatCurrency(value)}
+                  />
                   <Bar dataKey={yKey} fill="#3b82f6" />
                 </BarChart>
               )}

@@ -351,8 +351,8 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       {/* Revenue trend directly under Total Revenue for readability */}
       <div className="p-4 border rounded">
         <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
-        {/* Use categorical 'period' (YYYY-MM) as x axis with readable labels */}
-        <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
+        {/* Use categorical 'period' (YYYY-MM) as x axis with readable labels; pass currency so the chart formats ticks/tooltips */}
+        <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" currency={currencyCode} />
       </div>
 
       {showDebug && (
