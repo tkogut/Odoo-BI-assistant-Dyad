@@ -13,12 +13,30 @@ interface Props {
 const TotalRevenueCommand: React.FC<Props> = ({ relayHost = "http://localhost:8000", apiKey = "super_rooster" }) => {
   const [year, setYear] = useState<string>(new Date().getFullYear().toString());
 
-  const jsonPayload = `{"model":"sale.order","method":"read_group","args":[[["state","in",["sale","done"]],["date_order",">=","${year}-01-01"],["date_order","<=","${year}-12-31"]],["amount_total"],[]],"kwargs":{"lazy":false}}`;
+  // JSON payload uses read_group and groups by date_order:month to request monthly revenue
+  const jsonPayload = JSON.stringify(
+    {
+      model: "sale.order",
+      method: "read_group",
+      args: [
+        [
+          ["state", "in", ["sale", "done"]],
+          ["date_order", ">=", `${year}-01-01`],
+          ["date_order", "<=", `${year}-12-31`],
+        ],
+        ["amount_total"],
+        ["date_order:month"],
+      ],
+      kwargs: { lazy: false },
+    },
+    null,
+    2,
+  );
 
   const curl = `curl -s -X POST "${relayHost.replace(/\/$/, "")}/api/execute_method" \\
   -H "Content-Type: application/json" \\
   -H "X-API-Key: ${apiKey ?? ""}" \\
-  -d '${jsonPayload}'`;
+  -d '${jsonPayload.replace(/'/g, "'\"'\"'")}'`;
 
   const copy = async (text: string) => {
     try {
@@ -46,7 +64,7 @@ const TotalRevenueCommand: React.FC<Props> = ({ relayHost = "http://localhost:80
       </div>
 
       <div>
-        <label className="text-xs text-muted-foreground block mb-1">JSON payload</label>
+        <label className="text-xs text-muted-foreground block mb-1">JSON payload (monthly grouping)</label>
         <pre className="bg-muted p-2 rounded text-xs overflow-auto">{jsonPayload}</pre>
         <div className="flex gap-2 mt-2">
           <Button size="sm" variant="ghost" onClick={() => copy(jsonPayload)}>
