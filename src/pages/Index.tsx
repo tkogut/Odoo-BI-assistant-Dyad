@@ -8,6 +8,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import AIChat from "@/components/AIChat";
 import AIDashboardGenerator from "@/components/AIDashboardGenerator";
 import EmployeeSearch from "@/components/EmployeeSearch";
+import CompanyList from "@/components/CompanyList";
 import { showLoading, showSuccess, showError, dismissToast } from "@/utils/toast";
 
 const DEFAULT_RELAY = (import.meta.env.VITE_RELAY_HOST as string) ?? "http://localhost:8000";
@@ -98,6 +99,7 @@ const Index: React.FC = () => {
 
               <div className="w-full space-y-4">
                 <AIDashboardGenerator relayHost={relayHost} apiKey={apiKey} />
+                <CompanyList relayHost={relayHost} apiKey={apiKey} />
                 <EmployeeSearch relayHost={relayHost} apiKey={apiKey} />
               </div>
             </div>
