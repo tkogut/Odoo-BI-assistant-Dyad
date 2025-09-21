@@ -17,6 +17,7 @@ import {
   formatEmployeeSummary,
   runFallbackEmployeeSearch,
   callOpenAIFallback,
+  summarizeEmployeesWithAI,
 } from "@/components/ai-chat/utils";
 import interpretTextAsRelayCommand from "@/hooks/useNLInterpreter";
 import interpretWithOpenAI from "@/hooks/useOpenAIInterpreter";
@@ -150,7 +151,8 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
         const primary = await postSearchEmployee(relayHost, apiKey, name, (interp.payload as any).limit ?? 20, dept);
         if (primary.ok && primary.parsed && primary.parsed.success) {
           const employees = primary.parsed.employees ?? primary.parsed.result ?? [];
-          pushAssistant(formatEmployeeSummary(employees));
+          const summary = openaiKey ? await summarizeEmployeesWithAI(openaiKey, employees) : formatEmployeeSummary(employees);
+          pushAssistant(summary);
           showSuccess("Employee search returned results.");
           return;
         }
@@ -179,7 +181,8 @@ const AIChat: React.FC<Props> = ({ relayHost, apiKey, relayReachable = false }) 
               const empRes = await postToRelay(execUrl, empPayload, apiKey, 15000);
               if (empRes.ok && empRes.parsed && empRes.parsed.success) {
                 const employees = empRes.parsed.result ?? [];
-                pushAssistant(formatEmployeeSummary(employees));
+                const summary = openaiKey ? await summarizeEmployeesWithAI(openaiKey, employees) : formatEmployeeSummary(employees);
+                pushAssistant(summary);
                 showSuccess("Employee search by department returned results.");
                 return;
               }

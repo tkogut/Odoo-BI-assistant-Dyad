@@ -2,6 +2,7 @@
 
 import { ChatMessage } from "./MessageBubble";
 
+/** RelayResult type for normalized POST responses */
 export type RelayResult = {
   ok: boolean;
   status?: number;
@@ -71,15 +72,33 @@ export async function postSearchEmployee(relayHost: string, apiKey?: string, nam
 /** Format employee array into readable summary text. */
 export function formatEmployeeSummary(results: any[]) {
   if (!results || results.length === 0) {
-    return "No matching employees were found.";
+    return "I couldn't find any matching employees.";
   }
-  const lines = results.slice(0, 50).map((r: any) => {
-    const dept = r.department_id ? ` (${r.department_id[1]})` : "";
+
+  // If just one employee, produce a single-sentence description.
+  if (results.length === 1) {
+    const e = results[0];
+    const parts: string[] = [];
+    if (e.name) parts.push(e.name);
+    if (Array.isArray(e.department_id) && e.department_id[1]) parts.push(`department ${e.department_id[1]}`);
+    if (e.job_title) parts.push(e.job_title);
+    if (e.work_email) parts.push(`email ${e.work_email}`);
+    if (e.work_phone) parts.push(`phone ${e.work_phone}`);
+    const sentence = parts.length > 0 ? parts.join(", ") : "Employee record found.";
+    return `I found 1 employee: ${sentence}.`;
+  }
+
+  // Multiple employees: brief sentence plus up to 10 lines
+  const lines = results.slice(0, 10).map((r: any) => {
+    const name = r.name ?? "Unknown";
+    const dept = Array.isArray(r.department_id) && r.department_id[1] ? ` (${r.department_id[1]})` : "";
     const email = r.work_email ? ` — ${r.work_email}` : "";
     const phone = r.work_phone ? ` — ${r.work_phone}` : "";
-    return `• ${r.name}${dept}${email}${phone}`;
+    return `${name}${dept}${email}${phone}`;
   });
-  return `Found ${results.length} employee(s):\n` + lines.join("\n");
+
+  const suffix = results.length > 10 ? ` and ${results.length - 10} more` : "";
+  return `I found ${results.length} employees${suffix}: \n• ${lines.join("\n• ")}`;
 }
 
 /** Fallback employee search via execute_method (hr.employee search_read by name). */
@@ -147,4 +166,38 @@ export async function callOpenAIFallback(openaiKey: string | undefined, userMess
     throw new Error("OpenAI returned an unexpected response");
   }
   return content as string;
+}
+
+/** Summarize employee list using OpenAI (falls back to formatEmployeeSummary on error) */
+export async function summarizeEmployeesWithAI(openaiKey: string | undefined, employees: any[]) {
+  try {
+    if (!openaiKey) throw new Error("No OpenAI API key provided");
+    if (!employees || employees.length === 0) {
+      return "I couldn't find any matching employees.";
+    }
+
+    const lines = employees.slice(0, 50).map((e: any) => {
+      const dept = Array.isArray(e.department_id) && e.department_id[1] ? e.department_id[1] : null;
+      const email = e.work_email ?? null;
+      const phone = e.work_phone ?? null;
+      const job = e.job_title ?? null;
+      const details = [e.name, dept ? `dept: ${dept}` : null, job ? `job: ${job}` : null, email ? `email: ${email}` : null, phone ? `phone: ${phone}` : null]
+        .filter(Boolean)
+        .join(" | ");
+      return `- ${details}`;
+    }).join("\n");
+
+    const prompt = `You are a helpful assistant. Here is a list of employees (up to 50):\n${lines}\n\nPlease produce a concise, human-friendly summary paragraph (1-3 sentences) describing who they are and any notable shared attributes (department, job title), and mention the total count. Keep it short.`;
+
+    const content = await callOpenAIFallback(openaiKey, prompt, []);
+    // Some responses may include extraneous whitespace; trim.
+    return content.trim();
+  } catch {
+    // On any failure, fallback to the local formatter
+    try {
+      return formatEmployeeSummary(employees);
+    } catch {
+      return "I couldn't summarize the employee list.";
+    }
+  }
 }
