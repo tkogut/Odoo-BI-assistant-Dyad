@@ -14,8 +14,7 @@ interface Props {
 
 type KV = { title: string; value: string };
 
-const formatCurrency = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number(n || 0));
+const defaultCurrency = "USD";
 
 const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [loading, setLoading] = useState(false);
@@ -23,8 +22,74 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [inventoryValue, setInventoryValue] = useState<string>("-");
   const [topSuppliers, setTopSuppliers] = useState<KV[]>([]);
   const [trendData, setTrendData] = useState<Array<Record<string, any>>>([]);
+  const [currencyCode, setCurrencyCode] = useState<string>(defaultCurrency);
 
   const safeHost = (h: string) => h.replace(/\/$/, "");
+
+  const formatCurrency = (n: number) => {
+    const code = currencyCode || defaultCurrency;
+    // pick a locale hint for PLN vs others
+    const locale = code === "PLN" ? "pl-PL" : "en-US";
+    try {
+      return new Intl.NumberFormat(locale, { style: "currency", currency: code }).format(Number(n || 0));
+    } catch {
+      // If Intl fails (unknown currency code), fall back to simple formatting with code appended
+      return `${Number(n || 0).toFixed(2)} ${code}`;
+    }
+  };
+
+  const detectCompanyCurrency = async (execUrl: string) => {
+    try {
+      const companyPayload = {
+        model: "res.company",
+        method: "search_read",
+        args: [[]],
+        kwargs: { fields: ["currency_id"], limit: 1 },
+      };
+      const companyRes = await postToRelay(execUrl, companyPayload, apiKey, 10000);
+      if (companyRes.ok && companyRes.parsed && companyRes.parsed.success && Array.isArray(companyRes.parsed.result) && companyRes.parsed.result.length > 0) {
+        const comp = companyRes.parsed.result[0];
+        const cur = comp.currency_id;
+        if (Array.isArray(cur) && cur[1]) {
+          // If the name appears to be a 3-letter ISO code, use it directly (e.g., "PLN", "USD")
+          const cand = String(cur[1]).trim();
+          if (/^[A-Z]{3}$/.test(cand)) {
+            setCurrencyCode(cand);
+            return;
+          }
+        }
+        // If currency_id is an id or name not in ISO form, attempt to fetch res.currency by id
+        if (Array.isArray(cur) && cur[0]) {
+          const curId = cur[0];
+          const curPayload = {
+            model: "res.currency",
+            method: "search_read",
+            args: [[["id", "=", curId]]],
+            kwargs: { fields: ["name", "symbol"], limit: 1 },
+          };
+          const curRes = await postToRelay(execUrl, curPayload, apiKey, 10000);
+          if (curRes.ok && curRes.parsed && curRes.parsed.success && Array.isArray(curRes.parsed.result) && curRes.parsed.result.length > 0) {
+            const c = curRes.parsed.result[0];
+            // Prefer 'name' if it's an ISO code; otherwise try to infer from symbol -> map PLN symbol to PLN if possible
+            if (c.name && typeof c.name === "string" && /^[A-Z]{3}$/.test(c.name.trim())) {
+              setCurrencyCode(c.name.trim());
+              return;
+            }
+            if (c.symbol && typeof c.symbol === "string") {
+              // common symbols: "zł" -> assume PLN
+              const s = c.symbol.trim();
+              if (s.includes("z") || s.includes("ł") || s.toLowerCase().includes("pln")) {
+                setCurrencyCode("PLN");
+                return;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore detection failures and keep default currency
+    }
+  };
 
   const fetchKPIs = async () => {
     if (!relayHost) {
@@ -34,6 +99,11 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     setLoading(true);
     const toastId = showLoading("Fetching BI KPIs...");
     try {
+      const saleUrl = `${safeHost(relayHost)}/api/execute_method`;
+
+      // Try to detect company currency first (best-effort)
+      await detectCompanyCurrency(saleUrl);
+
       // 1) Revenue: sum amount_total from sale.order (recent window or all completed)
       const salePayload = {
         model: "sale.order",
@@ -41,7 +111,6 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         args: [[["state", "in", ["sale", "done"]]]],
         kwargs: { fields: ["amount_total", "date_order"], limit: 1000 },
       };
-      const saleUrl = `${safeHost(relayHost)}/api/execute_method`;
       const saleRes = await postToRelay(saleUrl, salePayload, apiKey, 30000);
       let totalRevenue = 0;
       if (saleRes.ok && saleRes.parsed && saleRes.parsed.success && Array.isArray(saleRes.parsed.result)) {
@@ -129,6 +198,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">BI Dashboard</h3>
         <div className="flex gap-2">
+          <div className="text-sm text-muted-foreground self-center">Currency: <span className="font-mono">{currencyCode}</span></div>
           <Button onClick={fetchKPIs} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh KPIs"}
           </Button>
@@ -136,8 +206,8 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard title="Total Revenue" value={revenue} subtitle="Sum of completed sales orders" loading={loading} />
-        <KPICard title="Inventory Value" value={inventoryValue} subtitle="Estimated stock value (qty * price)" loading={loading} />
+        <KPICard title="Total Revenue" value={revenue} subtitle={`Sum of completed sales orders (${currencyCode})`} loading={loading} />
+        <KPICard title="Inventory Value" value={inventoryValue} subtitle={`Estimated stock value (${currencyCode})`} loading={loading} />
         <div>
           <div className="p-4 border rounded">
             <div className="text-sm font-medium mb-2">Top Suppliers</div>
