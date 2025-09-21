@@ -39,43 +39,89 @@ function formatMonthLabel(ym: string) {
 }
 
 /** Build YYYY-MM key from various upstream period formats.
- * Examples handled:
- * - "2025-03" => "2025-03"
- * - "2025-03-15" => "2025-03"
- * - "Mar 2025" (Date.parse works) => "2025-03"
- * - numeric or other => returned as-is string
+ * Supports:
+ * - "2025-03" or "2025-3" or "202503" or "20250301"
+ * - "2025-03-15"
+ * - Date strings parseable by Date.parse (e.g. "Mar 2025", "2025/03/01")
+ * - Arrays like [2025,3] or [2025, "03"]
+ * - Objects like {year:2025, month:3}
+ * - Fallback: return String(raw)
  */
 function normalizeToYearMonth(raw: any): string {
-  if (!raw && raw !== 0) return "";
-  const s = String(raw).trim();
+  if (raw === null || raw === undefined) return "";
+  // If already YYYY-MM string
+  if (typeof raw === "string") {
+    const s = raw.trim();
 
-  // Directly match YYYY-MM or YYYY-M
-  const ym = s.match(/^(\d{4})-(\d{1,2})$/);
-  if (ym) {
-    const y = ym[1];
-    const m = ym[2].padStart(2, "0");
-    return `${y}-${m}`;
+    // Directly match YYYY-MM or YYYY-M
+    const ym = s.match(/^(\d{4})-(\d{1,2})$/);
+    if (ym) {
+      const y = ym[1];
+      const m = ym[2].padStart(2, "0");
+      return `${y}-${m}`;
+    }
+
+    // YYYY-MM-DD
+    const ymd = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (ymd) {
+      const y = ymd[1];
+      const m = ymd[2].padStart(2, "0");
+      return `${y}-${m}`;
+    }
+
+    // Compact YYYYMM or YYYYMMDD
+    const compact = s.match(/^(\d{4})(\d{2})(\d{2})?$/);
+    if (compact) {
+      const y = compact[1];
+      const m = compact[2];
+      return `${y}-${m}`;
+    }
+
+    // Try Date.parse (e.g. "Mar 2025")
+    const parsed = Date.parse(s);
+    if (!Number.isNaN(parsed)) {
+      const d = new Date(parsed);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      return `${y}-${m}`;
+    }
+
+    // Fallback to string (keep it so debug can show unmapped ident)
+    return s;
   }
 
-  // YYYY-MM-DD
-  const ymd = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (ymd) {
-    const y = ymd[1];
-    const m = ymd[2].padStart(2, "0");
-    return `${y}-${m}`;
+  // Arrays like [2025,3] or ["2025","03"]
+  if (Array.isArray(raw) && raw.length >= 2) {
+    const a0 = raw[0];
+    const a1 = raw[1];
+    const y = Number(a0);
+    const m = Number(a1);
+    if (Number.isFinite(y) && Number.isFinite(m) && m >= 1 && m <= 12) {
+      return `${String(y)}-${String(m).padStart(2, "0")}`;
+    }
   }
 
-  // Try Date.parse (e.g. "Mar 2025")
-  const parsed = Date.parse(s);
-  if (!Number.isNaN(parsed)) {
-    const d = new Date(parsed);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    return `${y}-${m}`;
+  // Objects with year/month keys
+  if (typeof raw === "object") {
+    if (raw.year && raw.month) {
+      const y = Number(raw.year);
+      const m = Number(raw.month);
+      if (Number.isFinite(y) && Number.isFinite(m) && m >= 1 && m <= 12) {
+        return `${String(y)}-${String(m).padStart(2, "0")}`;
+      }
+    }
+    // sometimes Odoo returns arrays inside objects or the group label under 'value' etc.
+    if (raw.value) {
+      return normalizeToYearMonth(raw.value);
+    }
   }
 
-  // Fallback: return raw string (will be shown but not used for year-based grid)
-  return s;
+  // As a last resort stringify the raw value so it does not crash downstream
+  try {
+    return String(raw);
+  } catch {
+    return "";
+  }
 }
 
 /** Generate array of YYYY-MM for a full calendar year (Jan..Dec) */
@@ -97,7 +143,10 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
 
   // Debug states
   const [rawGroups, setRawGroups] = useState<any[] | null>(null);
-  const [monthMapDebug, setMonthMapDebug] = useState<Record<string, number>>({});
+  const [monthMapDebug, setMonthMapDebug] = useState<{ monthMap: Record<string, number>; unmapped: any[] }>({
+    monthMap: {},
+    unmapped: [],
+  });
   const [showDebug, setShowDebug] = useState<boolean>(false);
 
   // Year selector for revenue/trend (default to current year)
@@ -175,23 +224,34 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       };
       const groupRes = await postToRelay(execUrl, groupPayload, apiKey, 30000);
 
-      let totalRevenue = 0;
-      // Map YYYY-MM -> amount
+      // Build normalized monthMap first, collect unmapped entries for debugging
       const monthMap: Record<string, number> = {};
-      const seenMonths = new Set<string>();
+      const unmapped: any[] = [];
       let rawGroupsLocal: any[] = [];
 
       if (groupRes.ok && groupRes.parsed && groupRes.parsed.success && Array.isArray(groupRes.parsed.result)) {
         const groups = groupRes.parsed.result as any[];
         rawGroupsLocal = groups;
+
         for (const g of groups) {
-          const raw = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? String(g.period ?? "");
+          // Many relays return a grouping label under a field named after the group e.g. {'date_order:month': '2025-03', 'amount_total': 1234}
+          const raw =
+            g["date_order:month"] ??
+            g["date_order:year"] ??
+            g["date_order"] ??
+            g[0] ??
+            // Some read_group responses return a tuple-like array inside the 'value' or 'key' field
+            g.value ??
+            g.key ??
+            String(g.period ?? "");
+
           const ym = normalizeToYearMonth(raw);
-          const amount = safeNumber(g.amount_total ?? g.amount ?? g["amount_total"]);
-          totalRevenue += amount;
-          if (ym) {
+          const amount = safeNumber(g.amount_total ?? g.amount ?? (g[Object.keys(g).find((k) => /amount/i.test(k)) as any] ?? 0));
+
+          if (ym && /^\d{4}-\d{2}$/.test(ym)) {
             monthMap[ym] = (monthMap[ym] || 0) + amount;
-            seenMonths.add(ym);
+          } else {
+            unmapped.push({ raw, normalized: ym, amount, original: g });
           }
         }
       } else {
@@ -199,53 +259,55 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         rawGroupsLocal = groupRes.parsed ?? null;
       }
 
+      // compute totalRevenue from normalized monthMap (safer than summing raw groups in case of duplicates)
+      const totalRevenue = Object.values(monthMap).reduce((acc, n) => acc + Number(n || 0), 0);
+
       // Persist debug info before building final series
       setRawGroups(rawGroupsLocal as any);
-      setMonthMapDebug(monthMap);
+      setMonthMapDebug({ monthMap, unmapped });
 
       let finalSeries: Array<{ period: string; label: string; value: number }> = [];
 
-      if (/^\d{4}$/.test(chosenYear)) {
-        // Build full Jan..Dec for the chosen year and map amounts (0 if missing)
-        const months = monthsForYear(chosenYear);
-        finalSeries = months.map((ym) => ({
-          period: ym,
-          label: formatMonthLabel(ym),
-          value: monthMap[ym] ?? 0,
-        }));
-      } else {
-        // No specific year chosen: build chronological list from seenMonths
-        const monthsArray = Array.from(seenMonths);
-        // Try to sort by parsed date
-        monthsArray.sort((a, b) => {
-          const aDate = Date.parse(`${a}-01`);
-          const bDate = Date.parse(`${b}-01`);
-          if (Number.isFinite(aDate) && Number.isFinite(bDate)) return aDate - bDate;
-          return String(a).localeCompare(String(b));
-        });
-        finalSeries = monthsArray.map((ym) => ({
-          period: ym,
-          label: formatMonthLabel(ym),
-          value: monthMap[ym] ?? 0,
-        }));
-      }
-
-      // If there was no data at all, make finalSeries empty (chart will show no data)
       if (Object.keys(monthMap).length === 0) {
+        // If there are no normalized months but unmapped entries exist, try to display nothing and surface debug info
         setTrendData([]);
         setRevenue("-");
+        showSuccess("BI KPIs loaded (no normalized month data). Check Debug for unmapped entries.");
       } else {
+        if (/^\d{4}$/.test(chosenYear)) {
+          // Build full Jan..Dec for the chosen year and map amounts (0 if missing)
+          const months = monthsForYear(chosenYear);
+          finalSeries = months.map((ym) => ({
+            period: ym,
+            label: formatMonthLabel(ym),
+            value: monthMap[ym] ?? 0,
+          }));
+        } else {
+          // No specific year chosen: build chronological list from monthMap keys
+          const monthsArray = Object.keys(monthMap);
+          monthsArray.sort((a, b) => {
+            const aDate = Date.parse(`${a}-01`);
+            const bDate = Date.parse(`${b}-01`);
+            if (Number.isFinite(aDate) && Number.isFinite(bDate)) return aDate - bDate;
+            return String(a).localeCompare(String(b));
+          });
+          finalSeries = monthsArray.map((ym) => ({
+            period: ym,
+            label: formatMonthLabel(ym),
+            value: monthMap[ym] ?? 0,
+          }));
+        }
+
         setTrendData(finalSeries);
         setRevenue(formatCurrency(totalRevenue));
+        showSuccess("BI KPIs loaded.");
       }
-
-      showSuccess("BI KPIs loaded.");
     } catch (err: any) {
       showError(err?.message || String(err));
       setRevenue("-");
       setTrendData([]);
       setRawGroups(null);
-      setMonthMapDebug({});
+      setMonthMapDebug({ monthMap: {}, unmapped: [] });
     } finally {
       dismissToast(toastId);
       setLoading(false);
@@ -311,16 +373,23 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
             <div>
               <div className="text-xs font-medium mb-2">Normalized YYYY‑MM → revenue map</div>
               <pre className="bg-muted p-2 rounded text-xs max-h-56 overflow-auto whitespace-pre-wrap">
-                {Object.keys(monthMapDebug).length ? JSON.stringify(monthMapDebug, null, 2) : "No month map data."}
+                {Object.keys(monthMapDebug.monthMap).length ? JSON.stringify(monthMapDebug.monthMap, null, 2) : "No month map data."}
               </pre>
             </div>
 
             <div>
-              <div className="text-xs font-medium mb-2">Final series (what is rendered)</div>
+              <div className="text-xs font-medium mb-2">Unmapped group entries (why some groups couldn't be normalized)</div>
               <pre className="bg-muted p-2 rounded text-xs max-h-56 overflow-auto whitespace-pre-wrap">
-                {trendData && trendData.length ? JSON.stringify(trendData, null, 2) : "No final series."}
+                {monthMapDebug.unmapped && monthMapDebug.unmapped.length ? JSON.stringify(monthMapDebug.unmapped, null, 2) : "No unmapped entries."}
               </pre>
             </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="text-xs font-medium mb-2">Final series (what is rendered)</div>
+            <pre className="bg-muted p-2 rounded text-xs max-h-56 overflow-auto whitespace-pre-wrap">
+              {trendData && trendData.length ? JSON.stringify(trendData, null, 2) : "No final series."}
+            </pre>
           </div>
         </div>
       )}
@@ -336,6 +405,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
           </div>
           <div className="mt-4 text-sm text-muted-foreground">
             The revenue trend now shows the months of the chosen year (Jan–Dec) on the X axis and monthly revenue on the Y axis, filling missing months with zero.
+            If values still look incorrect, toggle Debug and inspect "Raw read_group response" + "Unmapped group entries" to see how upstream groups are represented.
           </div>
         </div>
       </div>
