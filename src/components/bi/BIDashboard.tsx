@@ -16,7 +16,7 @@ interface Props {
 const defaultCurrency = "USD";
 
 /** Try to parse a period string into a Date.
- * Supports: YYYY-MM, YYYY-MM-DD, YYYY
+ * Supports: YYYY-MM, YYYY-MM-DD, YYYY and many common date formats.
  * Returns timestamp (number) or NaN when not parsable.
  */
 function parsePeriodToTimestamp(period: string): number {
@@ -49,22 +49,19 @@ function parsePeriodToTimestamp(period: string): number {
     return new Date(y, 0, 1).getTime();
   }
 
-  // Fallback: try Date.parse
-  const p = Date.parse(s);
-  return Number.isFinite(p) ? p : NaN;
+  // Try parsing human-readable month names like "Jan 2025" or "January 2025"
+  const tryDateParse = Date.parse(s);
+  if (!Number.isNaN(tryDateParse)) return tryDateParse;
+
+  // Fallback: attempt to parse formats like "2025-01" handled above; otherwise give NaN
+  return NaN;
 }
 
-/** Format period label for readability, preferring "Mon YYYY" for monthly periods. */
-function formatPeriodLabel(period: string): string {
-  const ts = parsePeriodToTimestamp(period);
-  if (Number.isFinite(ts)) {
-    const d = new Date(ts);
-    // If original was only a year, show year; else show short month + year
-    const yearOnly = /^(\d{4})$/.test(period.trim());
-    if (yearOnly) return `${d.getFullYear()}`;
-    return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(d);
-  }
-  return String(period);
+/** Format a timestamp (ms) to a short "Mon YYYY" label; if invalid, return original period string. */
+function formatTsLabel(ts: number, fallback?: string) {
+  if (!Number.isFinite(ts)) return fallback ?? "";
+  const d = new Date(ts);
+  return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(d);
 }
 
 const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
@@ -166,7 +163,9 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
           const amount = safeNumber(g.amount_total ?? g.amount ?? g["amount_total"]);
           totalRevenue += amount;
           const ts = parsePeriodToTimestamp(String(rawPeriod));
-          monthlyTrend.push({ rawPeriod: String(rawPeriod), ts: Number.isFinite(ts) ? ts : Number.MAX_SAFE_INTEGER, value: amount });
+          // If timestamp is NaN, try to coerce from common readable labels
+          const finalTs = Number.isFinite(ts) ? ts : Date.parse(String(rawPeriod)) || NaN;
+          monthlyTrend.push({ rawPeriod: String(rawPeriod), ts: Number.isFinite(finalTs) ? finalTs : Number.MAX_SAFE_INTEGER, value: amount });
         }
 
         // Sort chronologically using parsed timestamps; fallback to original order if unparsable
@@ -175,8 +174,13 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         // Keep the last 12 chronological points
         const last12 = monthlyTrend.slice(-12);
 
-        // Map to the shape ChartWidget expects: { period: string, value: number }
-        const formatted = last12.map((t) => ({ period: formatPeriodLabel(t.rawPeriod), value: t.value }));
+        // Map to the shape ChartWidget expects: { ts: number, period: string, label: string, value: number }
+        const formatted = last12.map((t) => ({
+          ts: t.ts === Number.MAX_SAFE_INTEGER ? NaN : t.ts,
+          period: t.rawPeriod,
+          label: Number.isFinite(t.ts) ? formatTsLabel(t.ts, t.rawPeriod) : t.rawPeriod,
+          value: t.value,
+        }));
         setTrendData(formatted);
         setRevenue(formatCurrency(totalRevenue));
       } else {
@@ -229,7 +233,8 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       {/* Revenue trend directly under Total Revenue for readability */}
       <div className="p-4 border rounded">
         <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
-        <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
+        {/* Use ts (timestamp) as xKey to enable a time-based X axis in ChartWidget */}
+        <ChartWidget title="" type="line" data={trendData} xKey="ts" yKey="value" />
       </div>
 
       <div className="p-4 border rounded space-y-3">
@@ -242,7 +247,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
             Showing data for: <span className="font-mono">{year || "all time"}</span>
           </div>
           <div className="mt-4 text-sm text-muted-foreground">
-            Revenue Trend is now sorted chronologically and placed directly under Total Revenue for easier reading.
+            The revenue trend is now derived from timestamps so months render in chronological order with the correct values.
           </div>
         </div>
       </div>
