@@ -15,6 +15,58 @@ interface Props {
 
 const defaultCurrency = "USD";
 
+/** Try to parse a period string into a Date.
+ * Supports: YYYY-MM, YYYY-MM-DD, YYYY
+ * Returns timestamp (number) or NaN when not parsable.
+ */
+function parsePeriodToTimestamp(period: string): number {
+  if (!period) return NaN;
+
+  // Trim and normalize
+  const s = String(period).trim();
+
+  // YYYY-MM
+  const ym = s.match(/^(\d{4})-(\d{1,2})$/);
+  if (ym) {
+    const y = Number(ym[1]);
+    const m = Number(ym[2]);
+    return new Date(y, m - 1, 1).getTime();
+  }
+
+  // YYYY-MM-DD
+  const ymd = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (ymd) {
+    const y = Number(ymd[1]);
+    const m = Number(ymd[2]);
+    const d = Number(ymd[3]);
+    return new Date(y, m - 1, d).getTime();
+  }
+
+  // YYYY
+  const yOnly = s.match(/^(\d{4})$/);
+  if (yOnly) {
+    const y = Number(yOnly[1]);
+    return new Date(y, 0, 1).getTime();
+  }
+
+  // Fallback: try Date.parse
+  const p = Date.parse(s);
+  return Number.isFinite(p) ? p : NaN;
+}
+
+/** Format period label for readability, preferring "Mon YYYY" for monthly periods. */
+function formatPeriodLabel(period: string): string {
+  const ts = parsePeriodToTimestamp(period);
+  if (Number.isFinite(ts)) {
+    const d = new Date(ts);
+    // If original was only a year, show year; else show short month + year
+    const yearOnly = /^(\d{4})$/.test(period.trim());
+    if (yearOnly) return `${d.getFullYear()}`;
+    return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(d);
+  }
+  return String(period);
+}
+
 const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
   const [loading, setLoading] = useState(false);
   const [revenue, setRevenue] = useState<string>("-");
@@ -105,19 +157,27 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       const groupRes = await postToRelay(execUrl, groupPayload, apiKey, 30000);
 
       let totalRevenue = 0;
-      let monthlyTrend: Array<{ period: string; value: number }> = [];
+      let monthlyTrend: Array<{ rawPeriod: string; ts: number; value: number }> = [];
 
       if (groupRes.ok && groupRes.parsed && groupRes.parsed.success && Array.isArray(groupRes.parsed.result)) {
         const groups = groupRes.parsed.result as any[];
         for (const g of groups) {
+          const rawPeriod = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? String(g.period ?? "");
           const amount = safeNumber(g.amount_total ?? g.amount ?? g["amount_total"]);
           totalRevenue += amount;
-          const period = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? "(period)";
-          monthlyTrend.push({ period: String(period), value: amount });
+          const ts = parsePeriodToTimestamp(String(rawPeriod));
+          monthlyTrend.push({ rawPeriod: String(rawPeriod), ts: Number.isFinite(ts) ? ts : Number.MAX_SAFE_INTEGER, value: amount });
         }
-        monthlyTrend.sort((a, b) => (a.period < b.period ? -1 : a.period > b.period ? 1 : 0));
+
+        // Sort chronologically using parsed timestamps; fallback to original order if unparsable
+        monthlyTrend.sort((a, b) => a.ts - b.ts);
+
+        // Keep the last 12 chronological points
         const last12 = monthlyTrend.slice(-12);
-        setTrendData(last12.map((t) => ({ period: t.period, value: t.value })));
+
+        // Map to the shape ChartWidget expects: { period: string, value: number }
+        const formatted = last12.map((t) => ({ period: formatPeriodLabel(t.rawPeriod), value: t.value }));
+        setTrendData(formatted);
         setRevenue(formatCurrency(totalRevenue));
       } else {
         // Clear values if no data
@@ -156,18 +216,20 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Total Revenue on top */}
+      <div>
         <KPICard
           title="Total Revenue"
           value={revenue}
           subtitle={`Sum of completed sales orders (${year || "all time"})`}
           loading={loading}
         />
+      </div>
 
-        <div className="p-4 border rounded">
-          <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
-          <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
-        </div>
+      {/* Revenue trend directly under Total Revenue for readability */}
+      <div className="p-4 border rounded">
+        <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
+        <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
       </div>
 
       <div className="p-4 border rounded space-y-3">
@@ -180,7 +242,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
             Showing data for: <span className="font-mono">{year || "all time"}</span>
           </div>
           <div className="mt-4 text-sm text-muted-foreground">
-            The dashboard shows only Total Revenue and the monthly Revenue Trend filtered by year.
+            Revenue Trend is now sorted chronologically and placed directly under Total Revenue for easier reading.
           </div>
         </div>
       </div>
