@@ -15,53 +15,78 @@ interface Props {
 
 const defaultCurrency = "USD";
 
-/** Try to parse a period string into a Date.
- * Supports: YYYY-MM, YYYY-MM-DD, YYYY and many common date formats.
- * Returns timestamp (number) or NaN when not parsable.
+/** Safe number parsing */
+const safeNumber = (v: any) => {
+  if (v === undefined || v === null || v === "") return 0;
+  if (typeof v === "number") return v;
+  const cleaned = String(v).replace(/[,\s]/g, "");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+};
+
+/** Format a YYYY-MM string like "2025-03" to "Mar 2025" */
+function formatMonthLabel(ym: string) {
+  try {
+    const [yStr, mStr] = (ym || "").split("-");
+    if (!yStr || !mStr) return ym;
+    const y = Number(yStr);
+    const m = Number(mStr);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return ym;
+    return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
+  } catch {
+    return ym;
+  }
+}
+
+/** Build YYYY-MM key from various upstream period formats.
+ * Examples handled:
+ * - "2025-03" => "2025-03"
+ * - "2025-03-15" => "2025-03"
+ * - "Mar 2025" (Date.parse works) => "2025-03"
+ * - numeric or other => returned as-is string
  */
-function parsePeriodToTimestamp(period: string): number {
-  if (!period) return NaN;
+function normalizeToYearMonth(raw: any): string {
+  if (!raw && raw !== 0) return "";
+  const s = String(raw).trim();
 
-  // Trim and normalize
-  const s = String(period).trim();
-
-  // YYYY-MM
+  // Directly match YYYY-MM or YYYY-M
   const ym = s.match(/^(\d{4})-(\d{1,2})$/);
   if (ym) {
-    const y = Number(ym[1]);
-    const m = Number(ym[2]);
-    return new Date(y, m - 1, 1).getTime();
+    const y = ym[1];
+    const m = ym[2].padStart(2, "0");
+    return `${y}-${m}`;
   }
 
   // YYYY-MM-DD
   const ymd = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (ymd) {
-    const y = Number(ymd[1]);
-    const m = Number(ymd[2]);
-    const d = Number(ymd[3]);
-    return new Date(y, m - 1, d).getTime();
+    const y = ymd[1];
+    const m = ymd[2].padStart(2, "0");
+    return `${y}-${m}`;
   }
 
-  // YYYY
-  const yOnly = s.match(/^(\d{4})$/);
-  if (yOnly) {
-    const y = Number(yOnly[1]);
-    return new Date(y, 0, 1).getTime();
+  // Try Date.parse (e.g. "Mar 2025")
+  const parsed = Date.parse(s);
+  if (!Number.isNaN(parsed)) {
+    const d = new Date(parsed);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    return `${y}-${m}`;
   }
 
-  // Try parsing human-readable month names like "Jan 2025" or "January 2025"
-  const tryDateParse = Date.parse(s);
-  if (!Number.isNaN(tryDateParse)) return tryDateParse;
-
-  // Fallback: attempt to parse formats like "2025-01" handled above; otherwise give NaN
-  return NaN;
+  // Fallback: return raw string (will be shown but not used for year-based grid)
+  return s;
 }
 
-/** Format a timestamp (ms) to a short "Mon YYYY" label; if invalid, return original period string. */
-function formatTsLabel(ts: number, fallback?: string) {
-  if (!Number.isFinite(ts)) return fallback ?? "";
-  const d = new Date(ts);
-  return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(d);
+/** Generate array of YYYY-MM for a full calendar year (Jan..Dec) */
+function monthsForYear(year: string) {
+  const y = Number(year);
+  if (!Number.isFinite(y)) return [];
+  const arr: string[] = [];
+  for (let m = 1; m <= 12; m++) {
+    arr.push(`${y}-${String(m).padStart(2, "0")}`);
+  }
+  return arr;
 }
 
 const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
@@ -83,14 +108,6 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
     } catch {
       return `${Number(n || 0).toFixed(2)} ${code}`;
     }
-  };
-
-  const safeNumber = (v: any) => {
-    if (v === undefined || v === null || v === "") return 0;
-    if (typeof v === "number") return v;
-    const cleaned = String(v).replace(/[,\s]/g, "");
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : 0;
   };
 
   const detectCompanyCurrency = async (execUrl: string) => {
@@ -154,39 +171,58 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       const groupRes = await postToRelay(execUrl, groupPayload, apiKey, 30000);
 
       let totalRevenue = 0;
-      let monthlyTrend: Array<{ rawPeriod: string; ts: number; value: number }> = [];
+      // Map YYYY-MM -> amount
+      const monthMap: Record<string, number> = {};
+      const seenMonths = new Set<string>();
 
       if (groupRes.ok && groupRes.parsed && groupRes.parsed.success && Array.isArray(groupRes.parsed.result)) {
         const groups = groupRes.parsed.result as any[];
         for (const g of groups) {
-          const rawPeriod = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? String(g.period ?? "");
+          const raw = g["date_order:month"] ?? g["date_order:year"] ?? g["date_order"] ?? g[0] ?? String(g.period ?? "");
+          const ym = normalizeToYearMonth(raw);
           const amount = safeNumber(g.amount_total ?? g.amount ?? g["amount_total"]);
           totalRevenue += amount;
-          const ts = parsePeriodToTimestamp(String(rawPeriod));
-          // If timestamp is NaN, try to coerce from common readable labels
-          const finalTs = Number.isFinite(ts) ? ts : Date.parse(String(rawPeriod)) || NaN;
-          monthlyTrend.push({ rawPeriod: String(rawPeriod), ts: Number.isFinite(finalTs) ? finalTs : Number.MAX_SAFE_INTEGER, value: amount });
+          if (ym) {
+            monthMap[ym] = (monthMap[ym] || 0) + amount;
+            seenMonths.add(ym);
+          }
         }
+      }
 
-        // Sort chronologically using parsed timestamps; fallback to original order if unparsable
-        monthlyTrend.sort((a, b) => a.ts - b.ts);
+      let finalSeries: Array<{ period: string; label: string; value: number }> = [];
 
-        // Keep the last 12 chronological points
-        const last12 = monthlyTrend.slice(-12);
-
-        // Map to the shape ChartWidget expects: { ts: number, period: string, label: string, value: number }
-        const formatted = last12.map((t) => ({
-          ts: t.ts === Number.MAX_SAFE_INTEGER ? NaN : t.ts,
-          period: t.rawPeriod,
-          label: Number.isFinite(t.ts) ? formatTsLabel(t.ts, t.rawPeriod) : t.rawPeriod,
-          value: t.value,
+      if (/^\d{4}$/.test(chosenYear)) {
+        // Build full Jan..Dec for the chosen year and map amounts (0 if missing)
+        const months = monthsForYear(chosenYear);
+        finalSeries = months.map((ym) => ({
+          period: ym,
+          label: formatMonthLabel(ym),
+          value: monthMap[ym] ?? 0,
         }));
-        setTrendData(formatted);
-        setRevenue(formatCurrency(totalRevenue));
       } else {
-        // Clear values if no data
-        setRevenue("-");
+        // No specific year chosen: build chronological list from seenMonths
+        const monthsArray = Array.from(seenMonths);
+        // Try to sort by parsed date
+        monthsArray.sort((a, b) => {
+          const aDate = Date.parse(`${a}-01`);
+          const bDate = Date.parse(`${b}-01`);
+          if (Number.isFinite(aDate) && Number.isFinite(bDate)) return aDate - bDate;
+          return String(a).localeCompare(String(b));
+        });
+        finalSeries = monthsArray.map((ym) => ({
+          period: ym,
+          label: formatMonthLabel(ym),
+          value: monthMap[ym] ?? 0,
+        }));
+      }
+
+      // If there was no data at all, make finalSeries empty (chart will show no data)
+      if (Object.keys(monthMap).length === 0) {
         setTrendData([]);
+        setRevenue("-");
+      } else {
+        setTrendData(finalSeries);
+        setRevenue(formatCurrency(totalRevenue));
       }
 
       showSuccess("BI KPIs loaded.");
@@ -233,8 +269,8 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
       {/* Revenue trend directly under Total Revenue for readability */}
       <div className="p-4 border rounded">
         <div className="text-sm font-medium mb-2">Revenue Trend (monthly)</div>
-        {/* Use ts (timestamp) as xKey to enable a time-based X axis in ChartWidget */}
-        <ChartWidget title="" type="line" data={trendData} xKey="ts" yKey="value" />
+        {/* Use categorical 'period' (YYYY-MM) as x axis with readable labels */}
+        <ChartWidget title="" type="line" data={trendData} xKey="period" yKey="value" />
       </div>
 
       <div className="p-4 border rounded space-y-3">
@@ -247,7 +283,7 @@ const BIDashboard: React.FC<Props> = ({ relayHost, apiKey }) => {
             Showing data for: <span className="font-mono">{year || "all time"}</span>
           </div>
           <div className="mt-4 text-sm text-muted-foreground">
-            The revenue trend is now derived from timestamps so months render in chronological order with the correct values.
+            The revenue trend now shows the months of the chosen year (Jan–Dec) on the X axis and monthly revenue on the Y axis, filling missing months with zero.
           </div>
         </div>
       </div>
