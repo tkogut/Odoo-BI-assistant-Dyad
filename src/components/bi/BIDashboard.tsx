@@ -45,6 +45,7 @@ function formatMonthLabel(ym: string) {
  * - "2025-03" or "2025-3" or "202503" or "20250301"
  * - "2025-03-15"
  * - Date strings parseable by Date.parse (e.g. "Mar 2025", "2025/03/01")
+ * - Month names in other locales (e.g. "kwietnia 2025", "kwi 2025")
  * - Arrays like [2025,3] or [2025, "03"]
  * - Objects like {year:2025, month:3}
  * - Fallback: return String(raw)
@@ -77,6 +78,113 @@ function normalizeToYearMonth(raw: any): string {
       const y = compact[1];
       const m = compact[2];
       return `${y}-${m}`;
+    }
+
+    // Try to parse localized month names (Polish and common English/short forms)
+    try {
+      // helper to strip diacritics and lowercase
+      const normalizeStr = (src: string) =>
+        src.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+      // mapping normalized month name fragments -> month number
+      const monthNamesMap: Record<string, number> = {
+        // English full & short
+        january: 1,
+        jan: 1,
+        february: 2,
+        feb: 2,
+        march: 3,
+        mar: 3,
+        april: 4,
+        apr: 4,
+        may: 5,
+        june: 6,
+        jun: 6,
+        july: 7,
+        jul: 7,
+        august: 8,
+        aug: 8,
+        september: 9,
+        sept: 9,
+        sep: 9,
+        october: 10,
+        oct: 10,
+        november: 11,
+        nov: 11,
+        december: 12,
+        dec: 12,
+        // Polish (nominative/genitive/short forms) - normalized (diacritics removed)
+        stycznia: 1,
+        stycz: 1,
+        styczen: 1,
+        sty: 1,
+        lutego: 2,
+        luty: 2,
+        lut: 2,
+        marca: 3,
+        marzec: 3,
+        mar: 3,
+        kwietnia: 4,
+        kwiecien: 4,
+        kwi: 4,
+        maja: 5,
+        maj: 5,
+        czerwca: 6,
+        czerwiec: 6,
+        cze: 6,
+        lipca: 7,
+        lipiec: 7,
+        lip: 7,
+        sierpnia: 8,
+        sierpien: 8,
+        sie: 8,
+        wrzesnia: 9,
+        wrzesien: 9,
+        wrz: 9,
+        pazdziernika: 10,
+        pazdziernik: 10,
+        paz: 10,
+        pazdz: 10,
+        pazdzier: 10,
+        listopada: 11,
+        listopad: 11,
+        lis: 11,
+        grudnia: 12,
+        grudzien: 12,
+        gru: 12,
+      };
+
+      const norm = normalizeStr(s);
+
+      // Attempt patterns like "kwietnia 2025", "kwi 2025", "april 2025", "apr 2025", "mar 2025"
+      const monthNameThenYear = norm.match(/^([a-ząęółśżźćń\-\.]{3,})\s+(\d{4})$/u);
+      if (monthNameThenYear) {
+        const namePart = monthNameThenYear[1].replace(/\./g, "");
+        const y = monthNameThenYear[2];
+        const mapped = monthNamesMap[namePart];
+        if (mapped) return `${y}-${String(mapped).padStart(2, "0")}`;
+      }
+
+      // Also check patterns like "2025 kwietnia" or "2025 kwi"
+      const yearThenMonthName = norm.match(/^(\d{4})\s+([a-ząęółśżźćń\-\.]{3,})$/u);
+      if (yearThenMonthName) {
+        const y = yearThenMonthName[1];
+        const namePart = yearThenMonthName[2].replace(/\./g, "");
+        const mapped = monthNamesMap[namePart];
+        if (mapped) return `${y}-${String(mapped).padStart(2, "0")}`;
+      }
+
+      // Try to pull any month token and a year anywhere in the string
+      const anyMonth = norm.match(/([a-ząęółśżźćń\-\.]{3,})/u);
+      const anyYear = norm.match(/(\d{4})/);
+      if (anyMonth && anyYear) {
+        const namePart = anyMonth[1].replace(/\./g, "");
+        const y = anyYear[1];
+        const mapped = monthNamesMap[namePart];
+        if (mapped) return `${y}-${String(mapped).padStart(2, "0")}`;
+      }
+    } catch {
+      // fallthrough to Date.parse fallback
     }
 
     // Try Date.parse (e.g. "Mar 2025")
